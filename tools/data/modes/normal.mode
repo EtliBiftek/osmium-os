@@ -1,0 +1,5 @@
+# Default desktop. Copy to ~/.config/osmium/modes/ to change it.
+name = Normal
+power = balanced
+notifications = on
+idle = on

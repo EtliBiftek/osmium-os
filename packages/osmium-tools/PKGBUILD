@@ -1,13 +1,19 @@
 # Maintainer: EtliBiftek
 # Built from this repo's tools/ crate; osmium-build sets OSMIUM_SRC to the repo root.
 pkgname=osmium-tools
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="OsmiumOS system tools (Rust)"
+pkgdesc="OsmiumOS system tools (Rust): modes, config history, installer helper"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('unknown')
-depends=('glibc' 'gcc-libs')
+depends=('glibc' 'gcc-libs' 'git')
+optdepends=(
+  'hyprland: osmium-mode'
+  'anyrun: osmium-mode menu'
+  'swaync: osmium-mode notifications'
+  'power-profiles-daemon: osmium-mode power profiles'
+)
 makedepends=('cargo')
 
 build() {
@@ -17,5 +23,11 @@ build() {
 }
 
 package() {
-  install -Dm755 "$srcdir/target/release/osmium-postinstall" -t "$pkgdir/usr/bin/"
+  local data="$OSMIUM_SRC/tools/data"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history} -t "$pkgdir/usr/bin/"
+  install -Dm644 "$data"/modes/*.mode -t "$pkgdir/usr/share/osmium/modes/"
+  install -Dm644 "$data"/systemd/osmium-history.{service,timer} -t "$pkgdir/usr/lib/systemd/user/"
+  # Enabled for every user by default; `systemctl --user disable osmium-history.timer` opts out.
+  install -d "$pkgdir/usr/lib/systemd/user/timers.target.wants"
+  ln -s ../osmium-history.timer "$pkgdir/usr/lib/systemd/user/timers.target.wants/osmium-history.timer"
 }

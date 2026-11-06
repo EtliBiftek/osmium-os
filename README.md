@@ -22,3 +22,10 @@ cargo run --release --manifest-path tools/Cargo.toml --bin osmium-build -- iso h
 - `tools/`: Rust crate. `osmium-build` builds the repo and ISOs, `osmium-postinstall` finishes installs
 
 Live user: `osmium` (passwordless sudo).
+
+## Tools
+
+- `osmium-mode` (`Super+M`): switch Normal / Oyun / Çalışma / Sunum modes. Add your own as
+  `~/.config/osmium/modes/<id>.mode` (keys: `name`, `power`, `notifications`, `idle`, `hypr`, `exec`).
+- `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
+  `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.

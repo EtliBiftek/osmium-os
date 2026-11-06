@@ -1,0 +1,8 @@
+[Unit]
+Description=Snapshot ~/.config into the OsmiumOS config history
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/osmium-history snapshot
+Nice=19
+IOSchedulingClass=idle

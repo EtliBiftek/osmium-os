@@ -1,0 +1,9 @@
+# Max FPS: no animations, blur or gaps; performance power profile; quiet.
+name = Oyun
+power = performance
+notifications = off
+idle = off
+hypr = hl.config({ animations = { enabled = false } })
+hypr = hl.config({ decoration = { blur = { enabled = false }, shadow = { enabled = false } } })
+hypr = hl.config({ general = { gaps_in = 0, gaps_out = 0 } })
+# exec = steam

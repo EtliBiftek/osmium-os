@@ -1,0 +1,6 @@
+# Focus: notifications off, battery-friendly, screen lock stays on.
+name = Çalışma
+power = balanced
+notifications = off
+idle = on
+# exec = alacritty

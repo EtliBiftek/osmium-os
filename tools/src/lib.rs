@@ -2,12 +2,41 @@
 
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub type Result<T = ()> = std::result::Result<T, String>;
 
 pub const REPO_URL: &str = "https://github.com/EtliBiftek/osmium-os/releases/download/repo";
+
+/// XDG base dir: `$<var>` if set and absolute, else `$HOME/<fallback>`.
+pub fn xdg_dir(var: &str, fallback: &str) -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()) {
+        return Ok(p);
+    }
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    Ok(PathBuf::from(home).join(fallback))
+}
+
+pub fn config_home() -> Result<PathBuf> {
+    xdg_dir("XDG_CONFIG_HOME", ".config")
+}
+
+pub fn data_home() -> Result<PathBuf> {
+    xdg_dir("XDG_DATA_HOME", ".local/share")
+}
+
+pub fn state_home() -> Result<PathBuf> {
+    xdg_dir("XDG_STATE_HOME", ".local/state")
+}
+
+/// Prints the error and exits 1. For `main`.
+pub fn exit_on_err(tool: &str, res: Result) {
+    if let Err(e) = res {
+        eprintln!("{tool}: {e}");
+        std::process::exit(1);
+    }
+}
 
 /// Runs a command and fails if it exits non-zero.
 pub fn run(cmd: &mut Command) -> Result {

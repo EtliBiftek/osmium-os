@@ -1,0 +1,5 @@
+# Presenting: no popups, no screen lock or blanking.
+name = Sunum
+power = performance
+notifications = off
+idle = off

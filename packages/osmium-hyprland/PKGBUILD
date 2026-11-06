@@ -9,6 +9,7 @@ license=('unknown')
 depends=(
   hyprland hypridle hyprlock hyprpolkitagent xdg-desktop-portal-hyprland
   ironbar swaync anyrun alacritty cosmic-files swayosd
+  osmium-tools power-profiles-daemon
   grim slurp wl-clipboard
   pipewire pipewire-pulse wireplumber
   qt5-wayland qt6-wayland polkit
