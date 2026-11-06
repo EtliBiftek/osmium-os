@@ -65,7 +65,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        edition: [hyprland]  # later: kde, gnome
+        edition: [hyprland, kde, gnome]
     container:
       image: archlinux:latest
       options: --privileged

@@ -9,11 +9,10 @@ license=('MIT' 'GPL-3.0-or-later')  # branding/ images and show.qml come from Ca
 depends=(
   osmium-tools calamares python rsync
   btrfs-progs snapper snap-pac grub grub-btrfs inotify-tools efibootmgr os-prober
-  networkmanager greetd greetd-tuigreet
+  networkmanager
 )
 
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   cp -rT "$startdir/etc" "$pkgdir/etc"
-  cp -rT "$startdir/usr" "$pkgdir/usr"
 }

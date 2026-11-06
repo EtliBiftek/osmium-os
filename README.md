@@ -1,6 +1,6 @@
 # OsmiumOS
 
-Arch Linux based distribution. Editions: Hyprland (KDE and GNOME planned).
+Arch Linux based distribution. Editions: Hyprland, KDE Plasma, GNOME.
 
 ## Build
 

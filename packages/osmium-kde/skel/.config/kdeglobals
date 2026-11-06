@@ -1,0 +1,5 @@
+[General]
+AccentColor=108,142,191
+
+[KDE]
+LookAndFeelPackage=org.kde.breezedark.desktop
