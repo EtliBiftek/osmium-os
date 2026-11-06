@@ -10,6 +10,7 @@ use std::process::Command;
 const LIVE_FILES: &[&str] = &[
     "/etc/sysusers.d/osmium.conf",
     "/etc/sudoers.d/osmium",
+    "/etc/tmpfiles.d/osmium-live.conf",
     "/etc/motd",
     "/etc/mkinitcpio.conf.d/archiso.conf",
     "/etc/ssh/sshd_config.d/10-archiso.conf",

@@ -89,6 +89,10 @@ fn iso(root: &Path, edition: &str) -> Result {
     append(profile.join("pacman.conf"), &osmium_repo_section(&repo_url(), key.is_some()))?;
     let patch = read(&root.join("common/profiledef.patch.sh"))?;
     append(profile.join("profiledef.sh"), &format!("EDITION=\"{edition}\"\n{patch}"))?;
+    let ed_patch = root.join("editions").join(edition).join("profiledef.patch.sh");
+    if ed_patch.is_file() {
+        append(profile.join("profiledef.sh"), &read(&ed_patch)?)?;
+    }
 
     run(Command::new("mkarchiso")
         .arg("-v")
