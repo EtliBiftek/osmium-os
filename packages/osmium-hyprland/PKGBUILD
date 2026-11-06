@@ -1,25 +1,31 @@
 # Maintainer: EtliBiftek
 pkgname=osmium-hyprland
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="OsmiumOS ready-to-use Hyprland desktop (configs, theme, apps)"
+pkgdesc="OsmiumOS ready-to-use Hyprland desktop (synthwave theme, configs, apps)"
 arch=('any')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('MIT')
 depends=(
   hyprland hypridle hyprlock hyprpolkitagent xdg-desktop-portal-hyprland
-  ironbar swaync anyrun alacritty cosmic-files swayosd
+  ironbar swaync anyrun alacritty cosmic-files swayosd awww
   osmium-tools osmium-settings power-profiles-daemon libnotify
   grim slurp wl-clipboard
   pipewire pipewire-pulse wireplumber
   qt5-wayland qt6-wayland polkit
   greetd greetd-tuigreet
-  ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji papirus-icon-theme
+  ttf-terminus-nerd ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji papirus-icon-theme
 )
+makedepends=(librsvg)
+
+build() {
+  rsvg-convert -w 2560 -h 1440 "$startdir/wallpaper/synthwave.svg" -o "$srcdir/synthwave.png"
+}
 
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   install -d "$pkgdir/etc/skel"
   cp -rT "$startdir/skel" "$pkgdir/etc/skel"
   install -Dm644 "$startdir/usr/share/osmium/greetd.toml" -t "$pkgdir/usr/share/osmium/"
+  install -Dm644 "$srcdir/synthwave.png" -t "$pkgdir/usr/share/backgrounds/osmium/"
 }

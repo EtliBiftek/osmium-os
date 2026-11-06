@@ -1,11 +1,44 @@
+# OsmiumOS synthwave terminal.
 [font]
-normal = { family = "JetBrainsMono Nerd Font" }
-size = 11
+normal = { family = "Terminess Nerd Font" }
+size = 13
 
 [window]
-opacity = 0.92
-padding = { x = 8, y = 8 }
+opacity = 0.9
+padding = { x = 12, y = 10 }
+decorations = "None"
+
+[cursor]
+style = { shape = "Block", blinking = "On" }
 
 [colors.primary]
-background = "#1b1f27"
-foreground = "#d8dee9"
+background = "#1a1033"
+foreground = "#f8e9ff"
+
+[colors.cursor]
+text = "#1a1033"
+cursor = "#ff2bd6"
+
+[colors.selection]
+text = "#1a1033"
+background = "#00e5ff"
+
+[colors.normal]
+black = "#2a1a4a"
+red = "#ff3c7f"
+green = "#3dffb4"
+yellow = "#ffb000"
+blue = "#7b8cff"
+magenta = "#ff2bd6"
+cyan = "#00e5ff"
+white = "#e6d6ff"
+
+[colors.bright]
+black = "#5c4a80"
+red = "#ff6b9d"
+green = "#7affd0"
+yellow = "#ffe259"
+blue = "#a3b0ff"
+magenta = "#ff7ae8"
+cyan = "#6ff3ff"
+white = "#ffffff"

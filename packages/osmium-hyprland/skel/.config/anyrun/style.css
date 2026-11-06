@@ -1,0 +1,34 @@
+/* OsmiumOS synthwave launcher. */
+* {
+    font-family: "Terminess Nerd Font", monospace;
+    font-size: 16px;
+}
+
+window {
+    background: transparent;
+}
+
+box.main {
+    background-color: alpha(#1a1033, 0.95);
+    border: 2px solid #ff2bd6;
+    border-radius: 6px;
+    padding: 10px;
+}
+
+text {
+    color: #f8e9ff;
+    caret-color: #00e5ff;
+    min-height: 32px;
+    padding: 4px 8px;
+}
+
+.match {
+    color: #e6d6ff;
+    padding: 4px 8px;
+}
+
+.match:selected {
+    background-color: #ff2bd6;
+    color: #0b0221;
+    border-radius: 4px;
+}

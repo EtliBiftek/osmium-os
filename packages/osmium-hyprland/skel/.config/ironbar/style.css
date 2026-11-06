@@ -1,39 +1,52 @@
+/* OsmiumOS synthwave bar. */
 :root {
-    --bg: #1b1f27;
-    --bg-alt: #2e3440;
-    --fg: #d8dee9;
-    --accent: #6c8ebf;
+    --night: #0b0221;
+    --dusk: #1a1033;
+    --pink: #ff2bd6;
+    --cyan: #00e5ff;
+    --sun: #ffb000;
+    --fg: #f8e9ff;
 }
 
 * {
-    font-family: "JetBrainsMono Nerd Font";
-    font-size: 13px;
+    font-family: "Terminess Nerd Font", "JetBrainsMono Nerd Font", monospace;
+    font-size: 15px;
     border: none;
     box-shadow: none;
     background-image: none;
 }
 
-#bar, popover, popover contents, calendar {
-    background-color: var(--bg);
+#bar {
+    background-color: alpha(#0b0221, 0.85);
+    border-bottom: 2px solid #ff2bd6;
+}
+
+popover, popover contents, calendar {
+    background-color: #1a1033;
+    border: 1px solid #00e5ff;
 }
 
 box, button, label {
     background-color: transparent;
-    color: var(--fg);
+    color: #f8e9ff;
 }
 
 button {
-    padding: 0 8px;
-    border-radius: 8px;
+    padding: 0 10px;
+    border-radius: 0;
 }
 
 button:hover, *:selected {
-    background-color: var(--bg-alt);
+    background-color: alpha(#ff2bd6, 0.25);
+}
+
+.workspaces .item {
+    color: #00e5ff;
 }
 
 .workspaces .item.focused {
-    background-color: var(--accent);
-    color: var(--bg);
+    color: #0b0221;
+    background-color: #ff2bd6;
 }
 
 #end > * + * {
@@ -41,5 +54,6 @@ button:hover, *:selected {
 }
 
 .clock {
+    color: #ffb000;
     font-weight: bold;
 }

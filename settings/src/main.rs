@@ -38,7 +38,7 @@ struct Appearance {
 impl Default for Appearance {
     fn default() -> Self {
         // Same values as the shipped hyprland.lua.
-        Appearance { gaps_in: 5, gaps_out: 10, rounding: 10, blur: true, animations: true, kb_layout: "tr".into() }
+        Appearance { gaps_in: 5, gaps_out: 10, rounding: 6, blur: true, animations: true, kb_layout: "tr".into() }
     }
 }
 
