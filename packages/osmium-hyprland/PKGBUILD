@@ -13,6 +13,7 @@ depends=(
   grim slurp wl-clipboard
   pipewire pipewire-pulse wireplumber
   qt5-wayland qt6-wayland polkit
+  greetd greetd-tuigreet
   ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji papirus-icon-theme
 )
 
@@ -20,4 +21,5 @@ package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   install -d "$pkgdir/etc/skel"
   cp -rT "$startdir/skel" "$pkgdir/etc/skel"
+  install -Dm644 "$startdir/usr/share/osmium/greetd.toml" -t "$pkgdir/usr/share/osmium/"
 }

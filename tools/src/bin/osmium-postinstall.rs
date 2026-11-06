@@ -29,12 +29,16 @@ const LIVE_FILES: &[&str] = &[
     "/usr/local/bin/choose-mirror",
     "/usr/local/bin/livecd-sound",
     "/usr/share/applications/osmium-install.desktop",
+    "/etc/xdg/autostart/osmium-install.desktop",
+    "/etc/sddm.conf.d/autologin.conf",
+    "/etc/systemd/system/display-manager.service",
     "/root/.automated_script.sh",
     "/root/.zlogin",
 ];
 
 const LIVE_DIRS: &[&str] = &[
     "/etc/systemd/system/getty@tty1.service.d",
+    "/etc/systemd/system/gdm.service.d",
     "/etc/systemd/system/cloud-init.target.wants",
     "/etc/systemd/system/systemd-networkd-wait-online.service.d",
     "/usr/local/share/livecd-sound",
@@ -78,14 +82,31 @@ fn postinstall() -> Result {
         .ok_or("no kernel found in /usr/lib/modules")?;
     copy(&vmlinuz, "/boot/vmlinuz-linux")?;
 
-    fs::create_dir_all("/etc/greetd").map_err(|e| format!("/etc/greetd: {e}"))?;
-    copy("/usr/share/osmium/greetd.toml", "/etc/greetd/config.toml")?;
+    let present: Vec<&str> = DMS
+        .iter()
+        .copied()
+        .filter(|dm| Path::new(&format!("/usr/lib/systemd/system/{dm}.service")).exists())
+        .collect();
+    let dm = pick_dm(&present).ok_or("no display manager (sddm, gdm, greetd) installed")?;
+    run(Command::new("systemctl").arg("enable").arg(format!("{dm}.service")))?;
+    if dm == "greetd" {
+        fs::create_dir_all("/etc/greetd").map_err(|e| format!("/etc/greetd: {e}"))?;
+        copy("/usr/share/osmium/greetd.toml", "/etc/greetd/config.toml")?;
+    }
 
     // Snapshots only make sense on a btrfs root.
     if succeeds(Command::new("btrfs").args(["subvolume", "show", "/"])) {
         run(Command::new("snapper").args(["--no-dbus", "-c", "root", "create-config", "/"]))?;
     }
     Ok(())
+}
+
+/// Display managers in priority order.
+const DMS: &[&str] = &["sddm", "gdm", "greetd"];
+
+/// The display manager to enable: the highest-priority one among `present`.
+fn pick_dm<'a>(present: &[&str]) -> Option<&'a str> {
+    DMS.iter().copied().find(|d| present.contains(d))
 }
 
 fn has_osmium_repo(pacman_conf: &str) -> bool {
@@ -118,6 +139,14 @@ fn remove_dangling_links(dir: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dm_priority() {
+        assert_eq!(pick_dm(&["greetd"]), Some("greetd"));
+        assert_eq!(pick_dm(&["greetd", "gdm"]), Some("gdm"));
+        assert_eq!(pick_dm(&["gdm", "sddm", "greetd"]), Some("sddm"));
+        assert_eq!(pick_dm(&[]), None);
+    }
 
     #[test]
     fn detects_repo_section() {
