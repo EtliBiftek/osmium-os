@@ -15,7 +15,7 @@ jobs:
       - name: Install tools
         run: pacman -Syu --noconfirm base-devel github-cli hyprland
       - name: Verify Hyprland config
-        run: Hyprland --verify-config --config packages/osmium-hyprland/skel/.config/hypr/hyprland.conf
+        run: mkdir -m 700 -p /tmp/xdg && XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config packages/osmium-hyprland/skel/.config/hypr/hyprland.conf
       - name: Build packages
         run: bash build-packages.sh
       - name: Publish pacman repo
