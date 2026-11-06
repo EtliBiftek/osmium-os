@@ -38,6 +38,9 @@ Live user: `osmium` (passwordless sudo).
   modes, config history and update checks. Appearance goes to `~/.config/hypr/osmium-settings.lua`.
 - `osmium-ai`: offline assistant on a local Ollama model (`osmium-ai setup`, `ask`, `fix`). It only
   proposes commands; each one runs only after you type `evet` (dangerous ones: `çalýþtýr`).
+- `osmium-migrate`: reads a Windows disk read-only and copies documents, wallpaper, user fonts and
+  Wi-Fi names (passwords cannot be read offline) and maps installed Windows programs to Linux
+  packages or alternatives. `osmium-migrate scan`, then `osmium-migrate all <windows-user>`.
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
 

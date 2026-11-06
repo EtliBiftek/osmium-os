@@ -7,7 +7,7 @@ pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check,
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('MIT')
-depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo')
+depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig')
 optdepends=(
   'hyprland: osmium-mode'
   'anyrun: osmium-mode menu'
@@ -16,6 +16,7 @@ optdepends=(
   'libnotify: osmium-update desktop notifications'
   'github-cli: osmium-share publish'
   'ollama: osmium-ai local model backend'
+  'networkmanager: osmium-migrate wifi'
 )
 makedepends=('cargo')
 
@@ -28,7 +29,7 @@ build() {
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   local data="$OSMIUM_SRC/tools/data"
-  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history,update,share,ai} -t "$pkgdir/usr/bin/"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history,update,share,ai,migrate} -t "$pkgdir/usr/bin/"
   install -Dm644 "$data"/modes/*.mode -t "$pkgdir/usr/share/osmium/modes/"
   install -Dm644 "$data"/ai.conf -t "$pkgdir/usr/share/osmium/"
   install -Dm644 "$data"/systemd/*.{service,timer} -t "$pkgdir/usr/lib/systemd/user/"
