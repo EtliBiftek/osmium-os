@@ -169,13 +169,16 @@ mod tests {
         fs::write(&f, "broken").unwrap();
         fs::write(repo.work_tree.join("new.conf"), "x").unwrap();
         repo.snapshot("v2").unwrap();
+        fs::write(&f, "unsaved edit").unwrap(); // not snapshotted yet
 
         restore(&repo, v1.trim(), None).unwrap();
         assert_eq!(fs::read_to_string(&f).unwrap(), "good");
         assert!(!repo.work_tree.join("new.conf").exists(), "files added later are removed");
-        // The broken state is still in history.
+        // Both the broken state and the unsaved edit are still in history.
         let log = output(repo.git().args(["log", "--format=%s"])).unwrap();
-        assert!(log.contains("v2") && log.contains("before restore"));
+        assert!(log.contains("v2") && log.contains("before restore"), "{log}");
+        let saved = output(repo.git().args(["show", "HEAD~1:hypr/hyprland.lua"])).unwrap();
+        assert_eq!(saved, "unsaved edit");
     }
 
     #[test]
