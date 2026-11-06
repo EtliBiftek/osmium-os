@@ -21,11 +21,11 @@ cargo run --release --manifest-path tools/Cargo.toml --bin osmium-build -- iso h
 - `packages/`: our PKGBUILDs; `packages/aur.txt` lists pinned AUR packages
 - `tools/`: Rust crate. `osmium-build` builds the repo and ISOs, `osmium-postinstall` finishes installs
 
-Live user: `osmium` (passwordless sudo).
+Live user: `osmium`.
 
 ## Tools
 
-- `osmium-mode` (`Super+M`): switch Normal / Oyun / Çalışma / Sunum modes. Add your own as
+- `osmium-mode` (`Super+M`): switch Normal / Oyun / Ã‡alÄ±ÅŸma / Sunum modes. Add your own as
   `~/.config/osmium/modes/<id>.mode` (keys: `name`, `power`, `notifications`, `idle`, `hypr`, `exec`).
 - `osmium-update`: before `pacman -Syu`, reads Arch News and bug reports opened in the last 7 days
   for the pending packages. A risky update is held as a whole (never a partial upgrade) for up to
@@ -37,7 +37,7 @@ Live user: `osmium` (passwordless sudo).
 - `osmium-settings` (`Super+I`): GUI for appearance (gaps, rounding, blur, animations, keyboard),
   modes, config history and update checks. Appearance goes to `~/.config/hypr/osmium-settings.lua`.
 - `osmium-ai`: offline assistant on a local Ollama model (`osmium-ai setup`, `ask`, `fix`). It only
-  proposes commands; each one runs only after you type `evet` (dangerous ones: `�al��t�r`).
+  proposes commands; each one runs only after you type `evet` (dangerous ones: `çalýþtýr`).
 - `osmium-migrate`: reads a Windows disk read-only and copies documents, wallpaper, user fonts and
   Wi-Fi names (passwords cannot be read offline) and maps installed Windows programs to Linux
   packages or alternatives. `osmium-migrate scan`, then `osmium-migrate all <windows-user>`.
