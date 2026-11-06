@@ -1,0 +1,27 @@
+name: Build ISO
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [hyprland]  # later: kde, gnome
+    container:
+      image: archlinux:latest
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install archiso
+        run: pacman -Syu --noconfirm archiso
+      - name: Build ${{ matrix.edition }}
+        run: bash build.sh ${{ matrix.edition }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osmiumos-${{ matrix.edition }}
+          path: out/*.iso
+          compression-level: 0
