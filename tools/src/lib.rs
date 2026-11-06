@@ -99,14 +99,17 @@ pub fn append(path: impl AsRef<Path>, text: &str) -> Result {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// Installed by osmium-keyring; its presence means the repo is signed.
+pub const KEYRING: &str = "/usr/share/pacman/keyrings/osmium.gpg";
+
 /// pacman.conf section for the OsmiumOS repo.
-pub fn osmium_repo_section(server: &str) -> String {
-    format!(
-        "\n[osmium]\n\
-         # shortcut: unsigned repo over HTTPS; add a signing key before public release.\n\
-         SigLevel = Optional TrustAll\n\
-         Server = {server}\n"
-    )
+pub fn osmium_repo_section(server: &str, signed: bool) -> String {
+    let siglevel = if signed {
+        "SigLevel = Required DatabaseRequired"
+    } else {
+        "# Unsigned until a signing key is set up (see README, Signing).\nSigLevel = Optional TrustAll"
+    };
+    format!("\n[osmium]\n{siglevel}\nServer = {server}\n")
 }
 
 #[cfg(test)]
@@ -121,7 +124,9 @@ mod tests {
 
     #[test]
     fn repo_section_has_server() {
-        let s = osmium_repo_section("https://x");
-        assert!(s.contains("[osmium]") && s.contains("Server = https://x"));
+        let s = osmium_repo_section("https://x", false);
+        assert!(s.contains("[osmium]") && s.contains("Server = https://x") && s.contains("TrustAll"));
+        let s = osmium_repo_section("https://x", true);
+        assert!(s.contains("SigLevel = Required DatabaseRequired") && !s.contains("TrustAll"));
     }
 }

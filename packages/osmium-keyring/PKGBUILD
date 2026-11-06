@@ -1,0 +1,19 @@
+# Maintainer: EtliBiftek
+# Built only when keys/osmium.asc is committed (osmium-build skips it otherwise).
+pkgname=osmium-keyring
+pkgver=1
+pkgrel=1
+pkgdesc="OsmiumOS package signing key for pacman"
+arch=('any')
+url="https://github.com/EtliBiftek/osmium-os"
+license=('MIT')
+install=osmium-keyring.install
+
+package() {
+  local key="${OSMIUM_SRC:?build with osmium-build}/keys/osmium.asc"
+  install -Dm644 "$OSMIUM_SRC/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -d "$pkgdir/usr/share/pacman/keyrings"
+  gpg --dearmor < "$key" > "$pkgdir/usr/share/pacman/keyrings/osmium.gpg"
+  gpg --with-colons --show-keys "$key" | awk -F: '/^fpr:/ { print $10 ":4:"; exit }' \
+    > "$pkgdir/usr/share/pacman/keyrings/osmium-trusted"
+}

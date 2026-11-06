@@ -41,9 +41,16 @@ jobs:
       - name: Smoke-test osmium-update against live Arch News
         run: |
           cargo run -q --locked --manifest-path tools/Cargo.toml --bin osmium-update -- check || [ $? -eq 2 ]
+      - name: Import signing key
+        env:
+          KEY: ${{ secrets.OSMIUM_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then printf '%s
+' "$KEY" | gpg --batch --import; else echo "no signing key: repo stays unsigned"; fi
       - name: Build packages
         env:
           OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo
+          OSMIUM_GPG_KEY_ID: ${{ secrets.OSMIUM_GPG_KEY_ID }}
         run: cargo run --release --locked --manifest-path tools/Cargo.toml --bin osmium-build -- packages
       - name: Publish pacman repo
         env:

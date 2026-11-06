@@ -8,6 +8,7 @@
 
 use osmium_tools::{
     REPO_URL, Result, append, osmium_repo_section, output, remove_dir, remove_file, run, succeeds,
+
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,23 @@ fn main() {
         eprintln!("osmium-build: {e}");
         std::process::exit(1);
     }
+}
+
+/// Committed public key; when present the repo and ISO are signed and verified.
+fn public_key(root: &Path) -> Option<PathBuf> {
+    Some(root.join("keys/osmium.asc")).filter(|p| p.is_file())
+}
+
+/// Secret key id imported in CI (GitHub secret OSMIUM_GPG_KEY_ID).
+fn signing_key() -> Option<String> {
+    std::env::var("OSMIUM_GPG_KEY_ID").ok().filter(|k| !k.trim().is_empty())
+}
+
+fn fingerprint(key: &Path) -> Result<String> {
+    let out = output(Command::new("gpg").args(["--with-colons", "--show-keys"]).arg(key))?;
+    out.lines()
+        .find_map(|l| l.strip_prefix("fpr:").and_then(|r| r.split(':').nth(8)).map(str::to_string))
+        .ok_or_else(|| format!("{}: no fingerprint", key.display()))
 }
 
 fn repo_url() -> String {
@@ -60,7 +78,15 @@ fn iso(root: &Path, edition: &str) -> Result {
             append(profile.join("packages.x86_64"), &read(&pkgs)?)?;
         }
     }
-    append(profile.join("pacman.conf"), &osmium_repo_section(&repo_url()))?;
+    let key = public_key(root);
+    if let Some(key) = &key {
+        // pacstrap uses the build host's keyring.
+        run(Command::new("pacman-key").arg("--add").arg(key))?;
+        run(Command::new("pacman-key").args(["--lsign-key", &fingerprint(key)?]))?;
+        append(profile.join("packages.x86_64"), "osmium-keyring
+")?;
+    }
+    append(profile.join("pacman.conf"), &osmium_repo_section(&repo_url(), key.is_some()))?;
     let patch = read(&root.join("common/profiledef.patch.sh"))?;
     append(profile.join("profiledef.sh"), &format!("EDITION=\"{edition}\"\n{patch}"))?;
 
@@ -109,6 +135,8 @@ fn packages(root: &Path) -> Result {
     let mut dirs: Vec<PathBuf> = io(fs::read_dir(root.join("packages")), "packages")?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| p.is_dir())
+        // The keyring package needs the committed public key.
+        .filter(|p| public_key(root).is_some() || !p.ends_with("osmium-keyring"))
         .collect();
     dirs.sort();
     for src in dirs {
@@ -130,12 +158,33 @@ fn packages(root: &Path) -> Result {
         return Err("calamares package has no Python modules".into());
     }
 
-    run(Command::new("repo-add").arg(out.join("osmium.db.tar.gz")).args(pkg_files(&out)?))?;
+    let key = signing_key();
+    if public_key(root).is_some() && key.is_none() {
+        return Err("keys/osmium.asc is committed but OSMIUM_GPG_KEY_ID is not set: refusing to publish an unsigned repo clients would reject".into());
+    }
+    let mut repo_add = Command::new("repo-add");
+    if let Some(key) = &key {
+        for pkg in pkg_files(&out)? {
+            let sig = PathBuf::from(format!("{}.sig", pkg.display()));
+            if !sig.is_file() {
+                run(Command::new("gpg").args(["--batch", "--yes", "--detach-sign", "-u", key]).arg(&pkg))?;
+            }
+        }
+        repo_add.args(["--sign", "--key", key]);
+    }
+    run(repo_add.arg(out.join("osmium.db.tar.gz")).args(pkg_files(&out)?))?;
     // GitHub release assets cannot be symlinks.
-    for f in ["db", "files"] {
-        let link = out.join(format!("osmium.{f}"));
-        remove_file(&link)?;
-        io(fs::copy(out.join(format!("osmium.{f}.tar.gz")), &link), &link)?;
+    for (link, target) in [
+        ("db", "db.tar.gz"),
+        ("files", "files.tar.gz"),
+        ("db.sig", "db.tar.gz.sig"),
+        ("files.sig", "files.tar.gz.sig"),
+    ] {
+        let (link, target) = (out.join(format!("osmium.{link}")), out.join(format!("osmium.{target}")));
+        if target.is_file() {
+            remove_file(&link)?;
+            io(fs::copy(&target, &link), &link)?;
+        }
     }
     Ok(())
 }
@@ -171,6 +220,11 @@ fn build(root: &Path, dir: &Path, out: &Path, flags: &str) -> Result {
         let url = format!("{}/{}", repo_url(), name.to_string_lossy());
         if use_cache && succeeds(Command::new("curl").args(["-fsL", "-o"]).arg(&dest).arg(&url)) {
             println!("cached: {}", name.to_string_lossy());
+            // Reuse its signature if one was published; otherwise it gets signed below.
+            let sig = format!("{}.sig", dest.display());
+            if !succeeds(Command::new("curl").args(["-fsL", "-o", &sig, &format!("{url}.sig")])) {
+                remove_file(&sig)?;
+            }
         } else {
             remove_file(&dest)?;
             cached = false;

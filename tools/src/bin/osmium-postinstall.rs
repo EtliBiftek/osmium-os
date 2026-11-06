@@ -1,7 +1,7 @@
 //! Finishes an OsmiumOS install. Calamares runs it inside the target chroot
 //! (shellprocess@postinstall), after users are created and before initcpio.
 
-use osmium_tools::{REPO_URL, Result, append, osmium_repo_section, remove_dir, remove_file, run, succeeds};
+use osmium_tools::{KEYRING, REPO_URL, Result, append, osmium_repo_section, remove_dir, remove_file, run, succeeds};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -68,10 +68,14 @@ fn postinstall() -> Result {
     // The live keyring lived on tmpfs; the installed system needs its own.
     run(Command::new("pacman-key").arg("--init"))?;
     run(Command::new("pacman-key").args(["--populate", "archlinux"]))?;
+    let signed = Path::new(KEYRING).is_file();
+    if signed {
+        run(Command::new("pacman-key").args(["--populate", "osmium"]))?;
+    }
 
     let conf = fs::read_to_string("/etc/pacman.conf").map_err(|e| format!("/etc/pacman.conf: {e}"))?;
     if !has_osmium_repo(&conf) {
-        append("/etc/pacman.conf", &osmium_repo_section(REPO_URL))?;
+        append("/etc/pacman.conf", &osmium_repo_section(REPO_URL, signed))?;
     }
 
     // Kernel image for initcpio and the bootloader (the live ISO keeps it outside the squashfs).

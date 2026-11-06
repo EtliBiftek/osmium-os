@@ -1,0 +1,9 @@
+post_install() {
+  if [ -d /etc/pacman.d/gnupg ]; then
+    pacman-key --populate osmium
+  fi
+}
+
+post_upgrade() {
+  post_install
+}

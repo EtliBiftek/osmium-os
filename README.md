@@ -44,6 +44,20 @@ Live user: `osmium` (passwordless sudo).
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
 
+## Signing
+
+The repo is unsigned until you set up a key. Once set up, packages and the repo database are
+signed in CI and the ISO and installed systems require valid signatures. On a Linux machine:
+
+```
+gpg --quick-gen-key "OsmiumOS Repo <you@example.com>" ed25519 sign never   # no passphrase
+gpg --armor --export "OsmiumOS Repo" > keys/osmium.asc                     # commit this
+gpg --armor --export-secret-keys "OsmiumOS Repo" | gh secret set OSMIUM_GPG_PRIVATE_KEY
+gpg --list-keys --with-colons "OsmiumOS Repo" | awk -F: '/^fpr:/ {print $10; exit}' | gh secret set OSMIUM_GPG_KEY_ID
+```
+
+Keep the secret key backed up offline; anyone holding it can publish packages your users trust.
+
 ## License
 
 MIT, see `LICENSE`. Exception: the Calamares branding files in
