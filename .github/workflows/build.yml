@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
 
+# One build at a time: runs share the published repo release.
+concurrency:
+  group: build
+  cancel-in-progress: true
+
 jobs:
   packages:
     runs-on: ubuntu-latest
@@ -36,6 +41,12 @@ jobs:
           # Drop package files no longer in the repo db.
           for a in $(gh release view repo -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
             [ -e "repo/$a" ] || gh release delete-asset repo "$a" -R "$GITHUB_REPOSITORY" -y
+          done
+          # Release downloads lag a few seconds behind uploads; the ISO job needs them live.
+          for f in repo/*; do
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/repo/$(basename "$f")"
+            for i in $(seq 30); do curl -fsIL -o /dev/null "$url" && break; sleep 5; done
+            curl -fsIL -o /dev/null "$url"
           done
 
   iso:
