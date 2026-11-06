@@ -53,7 +53,32 @@ fn main() {
     }
 }
 
+/// Replaces releng's archiso-only preset, whose config file is removed above.
+const LINUX_PRESET: &str = "\
+ALL_kver='/boot/vmlinuz-linux'
+PRESETS=('default' 'fallback')
+default_image='/boot/initramfs-linux.img'
+fallback_image='/boot/initramfs-linux-fallback.img'
+fallback_options='-S autodetect'
+";
+
+/// Used when the squashfs mirrorlist is all comments (reflector only ran on the live system).
+const MIRRORLIST: &str = "\
+# Run reflector to pick faster mirrors.
+Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
+";
+
 fn postinstall() -> Result {
+    // The live user ships in the squashfs passwd/shadow/group. Calamares cannot have
+    // created a user with this name (useradd would have failed), so this is the live one.
+    if succeeds(Command::new("id").arg("osmium")) {
+        // -f: the host /proc is bind-mounted and the live session runs as this uid,
+        // which plain userdel would refuse ("currently used by process").
+        run(Command::new("userdel").args(["-f", "osmium"]))?;
+    }
+    if succeeds(Command::new("getent").args(["group", "osmium"])) {
+        succeeds(Command::new("groupdel").arg("osmium"));
+    }
     for f in LIVE_FILES {
         remove_file(f)?;
     }
@@ -62,6 +87,12 @@ fn postinstall() -> Result {
     }
     // Units removed above leave dangling enable symlinks.
     remove_dangling_links(Path::new("/etc/systemd/system"))?;
+
+    write("/etc/mkinitcpio.d/linux.preset", LINUX_PRESET)?;
+    let mirrors = fs::read_to_string("/etc/pacman.d/mirrorlist").unwrap_or_default();
+    if !has_server(&mirrors) {
+        write("/etc/pacman.d/mirrorlist", MIRRORLIST)?;
+    }
 
     // The live root has an empty password: lock it, admin goes through sudo (wheel).
     run(Command::new("passwd").args(["-l", "root"]))?;
@@ -118,6 +149,17 @@ fn has_osmium_repo(pacman_conf: &str) -> bool {
     pacman_conf.lines().any(|l| l.trim() == "[osmium]")
 }
 
+/// True if the mirrorlist has an uncommented `Server =` line.
+fn has_server(mirrorlist: &str) -> bool {
+    mirrorlist
+        .lines()
+        .any(|l| l.trim_start().strip_prefix("Server").is_some_and(|r| r.trim_start().starts_with('=')))
+}
+
+fn write(path: &str, text: &str) -> Result {
+    fs::write(path, text).map_err(|e| format!("{path}: {e}"))
+}
+
 fn copy(from: impl AsRef<Path>, to: impl AsRef<Path>) -> Result {
     let (from, to) = (from.as_ref(), to.as_ref());
     fs::copy(from, to)
@@ -157,6 +199,21 @@ mod tests {
     fn detects_repo_section() {
         assert!(has_osmium_repo("[core]\n\n[osmium]\nServer = x\n"));
         assert!(!has_osmium_repo("[core]\n#[osmium]\n"));
+    }
+
+    #[test]
+    fn preset_is_not_archiso() {
+        assert!(!LINUX_PRESET.contains("archiso"));
+        assert!(LINUX_PRESET.contains("PRESETS=('default' 'fallback')"));
+    }
+
+    #[test]
+    fn detects_server_line() {
+        assert!(has_server("## comment\nServer = https://a/$repo/os/$arch\n"));
+        assert!(has_server("  Server=https://a\n"));
+        assert!(!has_server("##\n#Server = https://a\n# Server = https://b\n"));
+        assert!(!has_server(""));
+        assert!(has_server(MIRRORLIST));
     }
 
     #[cfg(unix)]

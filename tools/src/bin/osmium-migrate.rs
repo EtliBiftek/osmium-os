@@ -223,6 +223,8 @@ struct Stats {
     files: u64,
     bytes: u64,
     existing: u64,
+    /// Destination exists with a different size than the source; left alone.
+    differ: u64,
     errors: u64,
 }
 
@@ -231,22 +233,36 @@ impl Stats {
         self.files += o.files;
         self.bytes += o.bytes;
         self.existing += o.existing;
+        self.differ += o.differ;
         self.errors += o.errors;
     }
 }
 
+/// `<dir>/.<name>.osmium-part`: the in-progress copy of `dst`.
+fn part_path(dst: &Path) -> PathBuf {
+    let name = dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    dst.with_file_name(format!(".{name}.osmium-part"))
+}
+
 /// Copies one file; never overwrites (create_new) and removes its own partial output on failure.
+/// Writes to a temp file first so an interrupted run never leaves a truncated `dst`;
+/// returns `AlreadyExists` if `dst` appeared meanwhile (it is kept).
 fn copy_new(src: &Path, dst: &Path) -> std::io::Result<()> {
     if let Some(parent) = dst.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
-    let res = fs::File::open(src).and_then(|mut inp| std::io::copy(&mut inp, &mut out));
-    if res.is_err() {
-        drop(out);
-        let _ = fs::remove_file(dst);
-    }
-    res.map(|_| ())
+    let part = part_path(dst);
+    // A leftover from an earlier interrupted run is ours to discard.
+    let _ = fs::remove_file(&part);
+    let mut out = fs::OpenOptions::new().write(true).create_new(true).open(&part)?;
+    let res = fs::File::open(src)
+        .and_then(|mut inp| std::io::copy(&mut inp, &mut out))
+        .and_then(|_| out.sync_all());
+    drop(out);
+    // hard_link fails instead of replacing an existing dst.
+    let res = res.and_then(|()| fs::hard_link(&part, dst));
+    let _ = fs::remove_file(&part);
+    res
 }
 
 /// Walks `src`; with `dry` only counts. Symlinks and junctions are never followed.
@@ -271,8 +287,13 @@ fn copy_tree(src: &Path, dst: &Path, dry: bool, st: &mut Stats) {
             if JUNK_FILES.contains(&lower.as_str()) {
                 continue;
             }
-            if d.symlink_metadata().is_ok() {
-                st.existing += 1;
+            if let Ok(dm) = d.symlink_metadata() {
+                if dm.len() == meta.len() {
+                    st.existing += 1;
+                } else {
+                    eprintln!("  boyut farklı, atlandı: {}", d.display());
+                    st.differ += 1;
+                }
                 continue;
             }
             match if dry { Ok(()) } else { copy_new(&s, &d) } {
@@ -280,6 +301,7 @@ fn copy_tree(src: &Path, dst: &Path, dry: bool, st: &mut Stats) {
                     st.files += 1;
                     st.bytes += meta.len();
                 }
+                Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => st.existing += 1,
                 Err(err) => {
                     eprintln!("  kopyalanamadı {}: {err}", s.display());
                     st.errors += 1;
@@ -291,10 +313,11 @@ fn copy_tree(src: &Path, dst: &Path, dry: bool, st: &mut Stats) {
 
 fn report(st: &Stats) {
     println!(
-        "{} dosya ({}), {} zaten var (atlandı), {} hata",
+        "{} dosya ({}), {} zaten var (atlandı), {} boyut farklı, atlandı, {} hata",
         st.files,
         human(st.bytes),
         st.existing,
+        st.differ,
         st.errors
     );
 }
@@ -313,10 +336,11 @@ fn files(root: &Path, user: &str) -> Result {
         let mut st = Stats::default();
         copy_tree(&src, &dst, true, &mut st);
         println!(
-            "  {name:<10} {} dosya, {}, {} zaten var -> {}",
+            "  {name:<10} {} dosya, {}, {} zaten var, {} boyut farklı -> {}",
             st.files,
             human(st.bytes),
             st.existing,
+            st.differ,
             dst.display()
         );
         total.add(&st);
@@ -388,6 +412,7 @@ fn fonts(root: &Path, user: &str) -> Result {
 struct WifiProfile {
     ssid: String,
     auth: String,
+    encryption: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -417,16 +442,30 @@ fn parse_profile(xml: &str) -> Option<WifiProfile> {
     if ssid.is_empty() {
         return None;
     }
-    Some(WifiProfile { ssid, auth: tag(xml, "authentication").unwrap_or("").to_string() })
+    Some(WifiProfile {
+        ssid,
+        auth: tag(xml, "authentication").unwrap_or("").to_string(),
+        encryption: tag(xml, "encryption").unwrap_or("").to_string(),
+    })
 }
 
-fn security(auth: &str) -> Sec {
-    match auth.to_ascii_lowercase().as_str() {
-        "open" => Sec::Open,
+/// WEP profiles say `<authentication>open</authentication><encryption>WEP</encryption>`.
+fn security(auth: &str, encryption: &str) -> Sec {
+    let (a, e) = (auth.to_ascii_lowercase(), encryption.to_ascii_lowercase());
+    if e == "wep" {
+        return Sec::Unsupported;
+    }
+    match a.as_str() {
+        "open" if e == "none" => Sec::Open,
         "wpa2psk" | "wpapsk" => Sec::Key("wpa-psk"),
         "wpa3sae" => Sec::Key("sae"),
         _ => Sec::Unsupported,
     }
+}
+
+/// `list` is `nmcli -t --escape no -f NAME connection show`: one name per line, unescaped.
+fn has_connection(list: &str, ssid: &str) -> bool {
+    list.lines().any(|l| l == ssid)
 }
 
 fn read_profiles(base: &Path) -> Vec<WifiProfile> {
@@ -457,14 +496,11 @@ fn wifi(root: &Path) -> Result {
         println!("Kayıtlı Wi-Fi profili bulunamadı.");
         return Ok(());
     }
-    let existing: BTreeSet<String> = output(Command::new("nmcli").args(["-t", "-f", "NAME", "connection", "show"]))?
-        .lines()
-        .map(str::to_string)
-        .collect();
+    let existing = output(Command::new("nmcli").args(["-t", "--escape", "no", "-f", "NAME", "connection", "show"]))?;
     let mut todo = Vec::new();
     for p in &profiles {
-        let sec = security(&p.auth);
-        let state = if existing.contains(&p.ssid) {
+        let sec = security(&p.auth, &p.encryption);
+        let state = if has_connection(&existing, &p.ssid) {
             "zaten var"
         } else if sec == Sec::Unsupported {
             "desteklenmiyor (kurumsal/WEP)"
@@ -758,12 +794,30 @@ mod tests {
     #[test]
     fn wifi_xml_parsing() {
         let p = parse_profile(WLAN).unwrap();
-        assert_eq!(p, WifiProfile { ssid: "Caf&e Net".into(), auth: "WPA2PSK".into() });
+        assert_eq!(p, WifiProfile { ssid: "Caf&e Net".into(), auth: "WPA2PSK".into(), encryption: "AES".into() });
         assert!(parse_profile("<x/>").is_none());
-        assert_eq!(security("WPA2PSK"), Sec::Key("wpa-psk"));
-        assert_eq!(security("WPA3SAE"), Sec::Key("sae"));
-        assert_eq!(security("open"), Sec::Open);
-        assert_eq!(security("WPA2"), Sec::Unsupported);
+        assert_eq!(security("WPA2PSK", "AES"), Sec::Key("wpa-psk"));
+        assert_eq!(security("WPA3SAE", "AES"), Sec::Key("sae"));
+        assert_eq!(security("open", "none"), Sec::Open);
+        assert_eq!(security("WPA2", "AES"), Sec::Unsupported);
+    }
+
+    #[test]
+    fn wifi_wep_is_unsupported() {
+        let xml = "<WLANProfile><SSIDConfig><SSID><name>Old</name></SSID></SSIDConfig><authEncryption><authentication>open</authentication><encryption>WEP</encryption></authEncryption></WLANProfile>";
+        let p = parse_profile(xml).unwrap();
+        assert_eq!(security(&p.auth, &p.encryption), Sec::Unsupported);
+        assert_eq!(security("shared", "WEP"), Sec::Unsupported);
+        assert_eq!(security("open", ""), Sec::Unsupported);
+    }
+
+    #[test]
+    fn connection_match_is_whole_line() {
+        let list = "Home Net\na:b\\c\nCafe\n";
+        assert!(has_connection(list, "a:b\\c"));
+        assert!(has_connection(list, "Home Net"));
+        assert!(!has_connection(list, "Home"));
+        assert!(!has_connection(list, "Caf"));
     }
 
     #[test]
@@ -814,7 +868,7 @@ mod tests {
 
         let mut dry = Stats::default();
         copy_tree(&src, &dst, true, &mut dry);
-        assert_eq!(dry, Stats { files: 1, bytes: 2, existing: 1, errors: 0 });
+        assert_eq!(dry, Stats { files: 1, bytes: 2, existing: 1, differ: 0, errors: 0 });
         assert!(!dst.join("sub").exists(), "dry run must not write");
 
         let mut real = Stats::default();
@@ -826,7 +880,40 @@ mod tests {
 
         let mut again = Stats::default();
         copy_tree(&src, &dst, false, &mut again);
-        assert_eq!(again, Stats { files: 0, bytes: 0, existing: 2, errors: 0 });
+        assert_eq!(again, Stats { files: 0, bytes: 0, existing: 2, differ: 0, errors: 0 });
+        fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn copy_uses_temp_and_never_replaces() {
+        let t = tmp("part");
+        let (src, dst) = (t.join("src"), t.join("dst"));
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("a.txt"), "full").unwrap();
+        // Stale temp from an interrupted run: not an existing destination, gets replaced.
+        fs::write(dst.join(".a.txt.osmium-part"), "fu").unwrap();
+
+        let mut st = Stats::default();
+        copy_tree(&src, &dst, false, &mut st);
+        assert_eq!(st, Stats { files: 1, bytes: 4, existing: 0, differ: 0, errors: 0 });
+        assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "full");
+        assert!(!dst.join(".a.txt.osmium-part").exists());
+
+        // Same name, other size: reported, not overwritten.
+        fs::write(src.join("c.txt"), "longer").unwrap();
+        fs::write(dst.join("c.txt"), "x").unwrap();
+        let mut st = Stats::default();
+        copy_tree(&src, &dst, false, &mut st);
+        assert_eq!(st, Stats { files: 0, bytes: 0, existing: 1, differ: 1, errors: 0 });
+        assert_eq!(fs::read_to_string(dst.join("c.txt")).unwrap(), "x");
+
+        // Final name present: copy_new keeps it and cleans its temp.
+        fs::write(dst.join("b.txt"), "keep").unwrap();
+        let e = copy_new(&src.join("a.txt"), &dst.join("b.txt")).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read_to_string(dst.join("b.txt")).unwrap(), "keep");
+        assert!(!dst.join(".b.txt.osmium-part").exists());
         fs::remove_dir_all(&t).unwrap();
     }
 

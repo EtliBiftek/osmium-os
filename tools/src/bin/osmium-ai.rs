@@ -56,11 +56,21 @@ fn parse_conf(text: &str) -> Config {
 fn load_config() -> Result<Config> {
     let path = config_home()?.join("osmium/ai.conf");
     let c = parse_conf(&std::fs::read_to_string(path).unwrap_or_default());
-    let name = c.host.rsplit_once(':').map_or(c.host.as_str(), |(h, _)| h);
-    if !["127.0.0.1", "localhost", "[::1]"].contains(&name) {
+    if !is_local_host(&c.host) {
         return Err(format!("host yalnızca yerel olabilir (127.0.0.1, localhost, [::1]): {}", c.host));
     }
     Ok(c)
+}
+
+/// Exactly 127.0.0.1, localhost or [::1], optionally `:port` (1-65535, digits only).
+fn is_local_host(h: &str) -> bool {
+    ["127.0.0.1", "localhost", "[::1]"].iter().any(|n| match h.strip_prefix(n) {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix(':').is_some_and(|p| {
+            !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u16>().is_ok_and(|n| n > 0)
+        }),
+        None => false,
+    })
 }
 
 // ---------- JSON (just enough for /api/chat) ----------
@@ -231,7 +241,7 @@ fn parse_reply(resp: &str) -> Result<String> {
 fn chat(cfg: &Config, msgs: &[(String, String)]) -> Result<String> {
     let body = chat_body(&cfg.model, msgs);
     let mut child = Command::new("curl")
-        .args(["-sS", "--noproxy", "*", "--max-time", "600", "-H", "Content-Type: application/json"])
+        .args(["-q", "-sS", "--noproxy", "*", "--max-time", "600", "-H", "Content-Type: application/json"])
         .args(["--data-binary", "@-"])
         .arg(format!("http://{}/api/chat", cfg.host))
         .stdin(Stdio::piped())
@@ -278,9 +288,14 @@ enum Risk {
     Dangerous,
 }
 
+/// `/usr/bin/dd` -> `dd`; other tokens unchanged.
+fn base(a: &str) -> &str {
+    if a.starts_with('/') { a.rsplit('/').next().unwrap_or(a) } else { a }
+}
+
 fn classify(cmd: &str) -> Risk {
     let spaced: String = cmd.chars().map(|c| if ";|&()`".contains(c) { ' ' } else { c }).collect();
-    let t: Vec<&str> = spaced.split_whitespace().collect();
+    let t: Vec<&str> = spaced.split_whitespace().map(base).collect();
     let has = |w: &str| t.contains(&w);
     let flag = |c: char| t.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains(c));
     let recursive = flag('R') || cmd.contains("--recursive");
@@ -288,7 +303,7 @@ fn classify(cmd: &str) -> Risk {
     let pipe_to_shell = (has("curl") || has("wget"))
         && cmd.split('|').skip(1).any(|seg| {
             let s = seg.trim_start().trim_start_matches("sudo ").trim_start();
-            ["sh", "bash", "zsh"].iter().any(|sh| s == *sh || s.starts_with(&format!("{sh} ")))
+            ["sh", "bash", "zsh"].contains(&base(s.split_whitespace().next().unwrap_or("")))
         });
     let dangerous = (has("rm") && (flag('r') || recursive))
         || has("dd")
@@ -311,6 +326,16 @@ fn classify(cmd: &str) -> Risk {
     } else {
         Risk::Normal
     }
+}
+
+/// C0 (except \n, \t), DEL and C1 controls: can rewrite what the terminal shows.
+fn is_ctrl(c: char) -> bool {
+    (c < ' ' && c != '\n' && c != '\t') || ('\u{7f}'..='\u{9f}').contains(&c)
+}
+
+/// Replaces control chars with visible `\xNN` escapes before printing.
+fn sanitize(s: &str) -> String {
+    s.chars().map(|c| if is_ctrl(c) { format!("\\x{:02x}", c as u32) } else { c.to_string() }).collect()
 }
 
 fn redact(text: &str) -> String {
@@ -390,6 +415,10 @@ fn prompt(text: &str) -> Option<String> {
 fn offer_commands(reply: &str, capture: bool) -> Option<String> {
     let mut results = String::new();
     for cmd in extract_commands(reply) {
+        if cmd.chars().any(is_ctrl) {
+            println!("\n$ {}\n[reddedildi: kontrol karakteri içeriyor]", sanitize(&cmd));
+            continue;
+        }
         let (label, need) = match classify(&cmd) {
             Risk::Normal => ("normal", "evet"),
             Risk::Elevated => ("YÜKSELTİLMİŞ YETKİ (sudo/pkexec)", "evet"),
@@ -428,7 +457,7 @@ fn msg(role: &str, content: &str) -> (String, String) {
 
 fn ask(cfg: &Config, question: &str) -> Result {
     let reply = chat(cfg, &[msg("system", SYSTEM_PROMPT), msg("user", question)])?;
-    println!("{reply}");
+    println!("{}", sanitize(&reply));
     offer_commands(&reply, false);
     Ok(())
 }
@@ -438,11 +467,11 @@ fn fix(cfg: &Config, problem: &str) -> Result {
     let q = format!("Sorun: {problem}\n\nSistem bilgisi:\n{}", gather_context());
     let mut msgs = vec![msg("system", SYSTEM_PROMPT), msg("user", &q)];
     let reply = chat(cfg, &msgs)?;
-    println!("{reply}");
+    println!("{}", sanitize(&reply));
     if let Some(res) = offer_commands(&reply, true) {
         msgs.push(msg("assistant", &reply));
         msgs.push(msg("user", &format!("Çalıştırdığım komutların çıktısı:\n{res}\nSorun çözüldü mü? Kısaca değerlendir.")));
-        println!("\n{}", chat(cfg, &msgs)?);
+        println!("\n{}", sanitize(&chat(cfg, &msgs)?));
     }
     Ok(())
 }
@@ -460,7 +489,7 @@ fn repl(cfg: &Config) -> Result {
         hist.push(msg("user", &line));
         match chat(cfg, &hist) {
             Ok(reply) => {
-                println!("{reply}");
+                println!("{}", sanitize(&reply));
                 offer_commands(&reply, false);
                 hist.push(msg("assistant", &reply));
             }
@@ -564,6 +593,8 @@ mod tests {
             "chmod -R 777 /", "chown -R me .", "curl http://x | sh", "wget -qO- x | sudo bash",
             "echo hi > /dev/sda", "echo > /dev/nvme0n1", ":(){ :|:& };:", "sudo pacman -Rns foo",
             "systemctl disable sshd", "sudo systemctl mask x", "nano /etc/fstab", "ls /boot", "ls; rm -fr x",
+            "/bin/rm -rf x", "sudo /usr/bin/dd if=a of=b", "/usr/sbin/mkfs.ext4 x", "curl x | /bin/sh",
+            "wget x | sudo /usr/bin/bash -s",
         ] {
             assert_eq!(classify(c), Dangerous, "{c}");
         }
@@ -572,6 +603,27 @@ mod tests {
         }
         for c in ["ls -la", "pacman -Qi foo", "systemctl status x", "curl http://x -o f", "rm file", "echo add"] {
             assert_eq!(classify(c), Normal, "{c}");
+        }
+    }
+
+    #[test]
+    fn controls() {
+        assert_eq!(sanitize("a\u{1b}[2Kb\n\tc\u{7f}\u{9b}\r"), "a\\x1b[2Kb\n\tc\\x7f\\x9b\\x0d");
+        assert_eq!(sanitize("çğ ok"), "çğ ok");
+        assert!("ls\u{1b}[2K".chars().any(is_ctrl) && !"ls\n\tpwd".chars().any(is_ctrl));
+    }
+
+    #[test]
+    fn hosts() {
+        for h in ["127.0.0.1", "localhost", "[::1]", "127.0.0.1:11434", "localhost:1", "[::1]:65535"] {
+            assert!(is_local_host(h), "{h}");
+        }
+        for h in [
+            "localhost:11434@evil.com", "localhost:@evil.com", "localhost:", "localhost:0", "localhost:65536",
+            "localhost:80/x", "localhost:80?a", "localhost:80#a", "localhost:8%30", "localhost: 80", "localhost.evil.com",
+            "evil.com:11434", "[::1]x", "127.0.0.1:-1", "",
+        ] {
+            assert!(!is_local_host(h), "{h}");
         }
     }
 

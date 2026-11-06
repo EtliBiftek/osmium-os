@@ -81,6 +81,8 @@ fn iso(root: &Path, edition: &str) -> Result {
     let key = public_key(root);
     if let Some(key) = &key {
         // pacstrap uses the build host's keyring.
+        // Idempotent; stock containers may lack the local master key --lsign-key needs.
+        run(Command::new("pacman-key").arg("--init"))?;
         run(Command::new("pacman-key").arg("--add").arg(key))?;
         run(Command::new("pacman-key").args(["--lsign-key", &fingerprint(key)?]))?;
         append(profile.join("packages.x86_64"), "osmium-keyring
@@ -218,24 +220,35 @@ fn build(root: &Path, dir: &Path, out: &Path, flags: &str) -> Result {
             .current_dir(dir),
     )?;
     let use_cache = std::env::var("OSMIUM_REPO").is_ok();
-    let mut cached = true;
-    for name in list.lines().filter_map(|l| Path::new(l).file_name()) {
+    let names: Vec<_> = list.lines().filter_map(|l| Path::new(l).file_name()).collect();
+    let mut cached = use_cache;
+    for name in &names {
+        if !cached {
+            break;
+        }
         let dest = out.join(name);
         let url = format!("{}/{}", repo_url(), name.to_string_lossy());
-        if use_cache && succeeds(Command::new("curl").args(["-fsL", "-o"]).arg(&dest).arg(&url)) {
-            println!("cached: {}", name.to_string_lossy());
+        cached = succeeds(Command::new("curl").args(["-fsL", "-o"]).arg(&dest).arg(&url));
+        if cached {
             // Reuse its signature if one was published; otherwise it gets signed below.
-            let sig = format!("{}.sig", dest.display());
-            if !succeeds(Command::new("curl").args(["-fsL", "-o", &sig, &format!("{url}.sig")])) {
+            let sig = sig_path(&dest);
+            if !succeeds(Command::new("curl").arg("-fsL").arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
                 remove_file(&sig)?;
             }
-        } else {
-            remove_file(&dest)?;
-            cached = false;
         }
     }
     if cached {
+        for name in &names {
+            println!("cached: {}", name.to_string_lossy());
+        }
         return Ok(());
+    }
+    // Partial hit: drop every downloaded file and signature so a rebuilt package
+    // never ships next to a signature for different bytes.
+    for name in &names {
+        let dest = out.join(name);
+        remove_file(sig_path(&dest))?;
+        remove_file(&dest)?;
     }
     run(Command::new("sudo")
         .args(["-u", "builder", "env"])
@@ -245,8 +258,16 @@ fn build(root: &Path, dir: &Path, out: &Path, flags: &str) -> Result {
     for p in pkg_files(dir)? {
         let dest = out.join(p.file_name().unwrap());
         io(fs::rename(&p, &dest), &p)?;
+        // New bytes: force a fresh signature in packages().
+        remove_file(sig_path(&dest))?;
     }
     Ok(())
+}
+
+fn sig_path(pkg: &Path) -> PathBuf {
+    let mut s = pkg.as_os_str().to_owned();
+    s.push(".sig");
+    PathBuf::from(s)
 }
 
 #[cfg(test)]
@@ -257,5 +278,10 @@ mod tests {
     fn pkgrel_replaced_only_on_its_line() {
         let s = set_pkgrel("pkgname=x\npkgrel=1\n# pkgrel=9 in comment\n", "42");
         assert_eq!(s, "pkgname=x\npkgrel=42\n# pkgrel=9 in comment\n");
+    }
+
+    #[test]
+    fn sig_path_appends_suffix() {
+        assert_eq!(sig_path(Path::new("repo/a-1-1-x86_64.pkg.tar.zst")), Path::new("repo/a-1-1-x86_64.pkg.tar.zst.sig"));
     }
 }
