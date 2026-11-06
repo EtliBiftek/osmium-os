@@ -30,5 +30,15 @@ Live user: `osmium` (passwordless sudo).
 - `osmium-update`: before `pacman -Syu`, reads Arch News and bug reports opened in the last 7 days
   for the pending packages. A risky update is held as a whole (never a partial upgrade) for up to
   3 days; `osmium-update --force` skips the hold. A daily timer sends a notification.
+- `osmium-share`: `export [name]` bundles hypr, ironbar, anyrun, alacritty, swaync and mode configs
+  into one text file; `publish <file>` makes it a public gist link; `try <link>` shows every line
+  that can start a program, applies the theme and rolls back unless you confirm within 30 s;
+  `undo` restores what the last `try` replaced.
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
+
+## License
+
+MIT, see `LICENSE`. Exception: the Calamares branding files in
+`packages/osmium-calamares-config/etc/calamares/branding/osmium/` (images, `show.qml`) are
+GPL-3.0-or-later from Calamares, as their `.license` files and headers say.
