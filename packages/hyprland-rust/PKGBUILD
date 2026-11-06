@@ -10,6 +10,8 @@ url="https://github.com/EtliBiftek/hyprland-rust"
 license=('BSD-3-Clause' 'MIT')
 depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libinput' 'seatd' 'systemd-libs' 'libdrm' 'mesa' 'libglvnd')
 makedepends=('cargo')
+# makepkg's -flto turns vendored Lua (mlua) into GCC LTO objects that ld.lld cannot link.
+options=('!lto')
 provides=('hyprctl')
 # Both ship /usr/bin/hyprctl.
 conflicts=('hyprland')
