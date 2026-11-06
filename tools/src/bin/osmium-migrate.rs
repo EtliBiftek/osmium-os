@@ -376,7 +376,7 @@ fn wallpaper(root: &Path, user: &str) -> Result {
         return Ok(());
     }
     println!(
-        "Ayarlamak için (Hyprland ayarına dokunmadım):\n  geçici: swaybg -i {p} -m fill\n  hyprpaper.conf: preload = {p}  ve  wallpaper = ,{p}",
+        "Ayarlamak için (Hyprland ayarına dokunmadım):\n  geçici: awww img {p}\n  kalıcı: hyprland.lua içindeki `awww img` satırında yolu {p} yap",
         p = dst.display()
     );
     Ok(())

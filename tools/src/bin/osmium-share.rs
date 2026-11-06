@@ -25,10 +25,12 @@ const MAX_FILE: usize = 1 << 20;
 const MAX_TOTAL: usize = 5 << 20;
 const MAX_FILES: usize = 200;
 const TRY_SECONDS: u64 = 30;
-/// Substrings that mean "this line can start a program".
+/// Substrings that mean "this line can start a program": Lua calls, hyprlang/mode exec,
+/// ironbar (on_click, show_if, {{...}} dynamic strings, poll), hypridle listeners, anyrun plugins.
 const RISKY: &[&str] = &[
-    "exec_cmd", "os.execute", "io.popen", "require", "dofile", "loadfile", "exec =", "exec=",
-    "on_click", "on-click", "cmd", "command", "script", "shell",
+    "exec", "os.", "io.", "require", "dofile", "loadfile", "load(", "loadstring",
+    "on_click", "on-click", "show_if", "{{", "poll", "on-timeout", "on-resume", "on_timeout", "on_resume",
+    ".so", "cmd", "command", "script", "shell",
 ];
 
 #[derive(Debug, PartialEq)]
@@ -79,7 +81,9 @@ fn decode(text: &str, allow_absent: bool) -> Result<Bundle> {
     let (mut entries, mut total) = (Vec::new(), 0);
     while !rest.is_empty() {
         let (header, after) = rest.split_once('\n').ok_or("truncated theme")?;
-        let parts: Vec<&str> = header.splitn(4, ' ').collect();
+        // `absent` has no length field: split it in 3 so a path with spaces stays whole.
+        let n = if header.starts_with("=== absent ") { 3 } else { 4 };
+        let parts: Vec<&str> = header.splitn(n, ' ').collect();
         match parts[..] {
             ["===", "file", len, path] => {
                 let len: usize = len.parse().map_err(|_| format!("bad length in `{header}`"))?;
@@ -124,7 +128,9 @@ fn risky_lines(b: &Bundle) -> Vec<(String, usize, String)> {
         if let Entry::File(path, body) = e {
             for (i, line) in body.lines().enumerate() {
                 let t = line.trim();
-                if !t.starts_with("--") && !t.starts_with('#') && !t.starts_with("//") && RISKY.iter().any(|r| t.contains(r)) {
+                // `--[[x]] os.execute(...)` is a comment followed by code: only plain `--` lines are skipped.
+                let comment = (t.starts_with("--") && !t.starts_with("--[")) || t.starts_with('#') || t.starts_with("//");
+                if !comment && RISKY.iter().any(|r| t.contains(r)) {
                     v.push((path.clone(), i + 1, t.to_string()));
                 }
             }
@@ -229,6 +235,14 @@ fn preview(b: &Bundle) -> Result {
         println!("\nProgram çalıştırabilen satırlar (dikkatle oku):");
         for (path, n, line) in &risky {
             println!("  {path}:{n}: {line}");
+        }
+    }
+    // Lua can hide a call from any substring scan (`_G["o".."s"]`), so name every Lua file.
+    for e in &b.entries {
+        if let Entry::File(path, _) = e {
+            if path.ends_with(".lua") {
+                println!("  {path}: Lua kodu, tamamı çalışır; satır listesi eksik olabilir");
+            }
         }
     }
     Ok(())
@@ -366,6 +380,30 @@ mod tests {
         assert!(lines.contains(&"hl.exec_cmd(\"waybar\")"));
         assert!(lines.contains(&"exec = steam"));
         assert!(!lines.iter().any(|l| l.starts_with("--")));
+    }
+
+    #[test]
+    fn flags_hidden_and_non_lua_program_lines() {
+        let b = Bundle {
+            name: "x".into(),
+            entries: vec![
+                Entry::File("hypr/hyprland.lua".into(), "--[[x]] os.execute(\"id\")
+".into()),
+                Entry::File("hypr/hypridle.conf".into(), "on-timeout = id
+".into()),
+                Entry::File("ironbar/config.toml".into(), "show_if = \"id\"
+".into()),
+                Entry::File("anyrun/config.ron".into(), "plugins: [\"/tmp/x.so\"],
+".into()),
+            ],
+        };
+        assert_eq!(risky_lines(&b).len(), 4);
+    }
+
+    #[test]
+    fn absent_path_with_space_roundtrips() {
+        let b = Bundle { name: "x".into(), entries: vec![Entry::Absent("osmium/modes/my mode.mode".into())] };
+        assert_eq!(decode(&encode(&b), true).unwrap(), b);
     }
 
     #[test]

@@ -19,8 +19,9 @@ const DEFAULT_HOST: &str = "127.0.0.1:11434";
 const CONTEXT_CAP: usize = 12 * 1024;
 const OUTPUT_CAP: usize = 4 * 1024;
 const HISTORY_MAX: usize = 24;
-const SYSTEM_PROMPT: &str = "Sen OsmiumOS asistanısın. OsmiumOS, Arch Linux ve Hyprland 0.57 \
-tabanlı bir dağıtımdır; Hyprland ayarı ~/.config/hypr/hyprland.lua (Lua) dosyasındadır. \
+const SYSTEM_PROMPT: &str = "Sen OsmiumOS asistanısın. OsmiumOS, Arch Linux tabanlı bir dağıtımdır; \
+pencere yöneticisi hyprland-rust (Rust ile yazılmış Hyprland), ayarı ~/.config/hypr/hyprland.lua (Lua). \
+hyprctl eval yoktur: canlı ayar için hyprctl keyword, yeniden yükleme için hyprctl reload kullanılır. \
 Şu osmium araçlarını bilirsin: osmium-mode (çalışma/oyun/sunum modları), osmium-history \
 (sistem geçmişi), osmium-update (güncelleme), osmium-share (tema paylaşımı), osmium-migrate. \
 Türkçe ve kısa cevap ver. Çalıştırılmasını istediğin her komutu ```komut ... ``` çitli \
@@ -294,17 +295,18 @@ fn base(a: &str) -> &str {
 }
 
 fn classify(cmd: &str) -> Risk {
-    let spaced: String = cmd.chars().map(|c| if ";|&()`".contains(c) { ' ' } else { c }).collect();
+    // Quotes and $/{} too: `sh -c 'rm -rf ~'` must show `rm` as a word.
+    let spaced: String = cmd.chars().map(|c| if ";|&()`'\"${}".contains(c) { ' ' } else { c }).collect();
     let t: Vec<&str> = spaced.split_whitespace().map(base).collect();
     let has = |w: &str| t.contains(&w);
     let flag = |c: char| t.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a.contains(c));
     let recursive = flag('R') || cmd.contains("--recursive");
     let compact: String = cmd.split_whitespace().collect();
-    let pipe_to_shell = (has("curl") || has("wget"))
-        && cmd.split('|').skip(1).any(|seg| {
-            let s = seg.trim_start().trim_start_matches("sudo ").trim_start();
-            ["sh", "bash", "zsh"].contains(&base(s.split_whitespace().next().unwrap_or("")))
-        });
+    // Anything piped into a shell (curl | sh, base64 -d | sh) runs code the user never sees.
+    let pipe_to_shell = cmd.split('|').skip(1).any(|seg| {
+        let s = seg.trim_start().trim_start_matches("sudo ").trim_start();
+        ["sh", "bash", "zsh"].contains(&base(s.split_whitespace().next().unwrap_or("")))
+    });
     let dangerous = (has("rm") && (flag('r') || recursive))
         || has("dd")
         || t.iter().any(|a| a.starts_with("mkfs"))
@@ -594,7 +596,8 @@ mod tests {
             "echo hi > /dev/sda", "echo > /dev/nvme0n1", ":(){ :|:& };:", "sudo pacman -Rns foo",
             "systemctl disable sshd", "sudo systemctl mask x", "nano /etc/fstab", "ls /boot", "ls; rm -fr x",
             "/bin/rm -rf x", "sudo /usr/bin/dd if=a of=b", "/usr/sbin/mkfs.ext4 x", "curl x | /bin/sh",
-            "wget x | sudo /usr/bin/bash -s",
+            "wget x | sudo /usr/bin/bash -s", "sh -c 'rm -rf ~'", "bash -c \"dd if=/dev/zero of=/dev/sda\"",
+            "echo cm0= | base64 -d | sh",
         ] {
             assert_eq!(classify(c), Dangerous, "{c}");
         }
