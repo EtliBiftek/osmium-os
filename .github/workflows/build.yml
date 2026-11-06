@@ -5,7 +5,29 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  packages:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: pacman -Syu --noconfirm base-devel github-cli hyprland
+      - name: Verify Hyprland config
+        run: Hyprland --verify-config --config packages/osmium-hyprland/skel/.config/hypr/hyprland.conf
+      - name: Build packages
+        run: bash build-packages.sh
+      - name: Publish pacman repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view repo -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create repo -R "$GITHUB_REPOSITORY" --title "Package repo" --notes "pacman repo for OsmiumOS" --latest=false
+          gh release upload repo repo/* -R "$GITHUB_REPOSITORY" --clobber
+
+  iso:
+    needs: packages
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

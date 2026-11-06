@@ -13,6 +13,13 @@ for layer in "$ROOT/common" "$ROOT/editions/$EDITION"; do
   [[ -d "$layer/airootfs" ]] && cp -rT "$layer/airootfs" "$PROFILE/airootfs"
   [[ -f "$layer/packages.x86_64" ]] && cat "$layer/packages.x86_64" >> "$PROFILE/packages.x86_64"
 done
+cat >> "$PROFILE/pacman.conf" <<CONF
+
+[osmium]
+# shortcut: unsigned repo over HTTPS; add a signing key before public release.
+SigLevel = Optional TrustAll
+Server = ${OSMIUM_REPO:-https://github.com/EtliBiftek/osmium-os/releases/download/repo}
+CONF
 { echo "EDITION=\"$EDITION\""; cat "$ROOT/common/profiledef.patch.sh"; } >> "$PROFILE/profiledef.sh"
 
 mkarchiso -v -w "$ROOT/work/build-$EDITION" -o "$ROOT/out" "$PROFILE"
