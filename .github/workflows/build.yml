@@ -13,17 +13,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
-        run: pacman -Syu --noconfirm base-devel git python github-cli hyprland
+        run: pacman -Syu --noconfirm base-devel git python rust github-cli hyprland
       - name: Verify Hyprland config
         run: |
           useradd -m checker
           install -o checker -m 644 packages/osmium-hyprland/skel/.config/hypr/hyprland.lua /tmp/hyprland.lua
           install -d -o checker -m 700 /tmp/xdg
           runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.lua
+      - name: Test tools
+        run: cargo test --locked --manifest-path tools/Cargo.toml
       - name: Build packages
         env:
           OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo
-        run: bash build-packages.sh
+        run: cargo run --release --locked --manifest-path tools/Cargo.toml --bin osmium-build -- packages
       - name: Publish pacman repo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -49,9 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install archiso
-        run: pacman -Syu --noconfirm archiso
+        run: pacman -Syu --noconfirm archiso rust
       - name: Build ${{ matrix.edition }}
-        run: bash build.sh ${{ matrix.edition }}
+        run: cargo run --release --locked --manifest-path tools/Cargo.toml --bin osmium-build -- iso ${{ matrix.edition }}
       - uses: actions/upload-artifact@v4
         with:
           name: osmiumos-${{ matrix.edition }}

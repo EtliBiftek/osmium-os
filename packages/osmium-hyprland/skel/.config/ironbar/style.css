@@ -1,0 +1,45 @@
+:root {
+    --bg: #1b1f27;
+    --bg-alt: #2e3440;
+    --fg: #d8dee9;
+    --accent: #6c8ebf;
+}
+
+* {
+    font-family: "JetBrainsMono Nerd Font";
+    font-size: 13px;
+    border: none;
+    box-shadow: none;
+    background-image: none;
+}
+
+#bar, popover, popover contents, calendar {
+    background-color: var(--bg);
+}
+
+box, button, label {
+    background-color: transparent;
+    color: var(--fg);
+}
+
+button {
+    padding: 0 8px;
+    border-radius: 8px;
+}
+
+button:hover, *:selected {
+    background-color: var(--bg-alt);
+}
+
+.workspaces .item.focused {
+    background-color: var(--accent);
+    color: var(--bg);
+}
+
+#end > * + * {
+    margin-left: 10px;
+}
+
+.clock {
+    font-weight: bold;
+}

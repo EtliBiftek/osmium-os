@@ -7,7 +7,7 @@ arch=('any')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('unknown')
 depends=(
-  calamares python rsync
+  osmium-tools calamares python rsync
   btrfs-progs snapper snap-pac grub grub-btrfs inotify-tools efibootmgr os-prober
   networkmanager greetd greetd-tuigreet
 )
@@ -15,5 +15,4 @@ depends=(
 package() {
   cp -rT "$startdir/etc" "$pkgdir/etc"
   cp -rT "$startdir/usr" "$pkgdir/usr"
-  chmod 755 "$pkgdir/usr/bin/osmium-postinstall"
 }

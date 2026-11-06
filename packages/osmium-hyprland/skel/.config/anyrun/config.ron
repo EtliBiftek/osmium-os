@@ -1,0 +1,30 @@
+Config(
+  x: Fraction(0.5),
+  y: Fraction(0.25),
+  width: Absolute(700),
+  height: Absolute(1),
+  hide_icons: false,
+  ignore_exclusive_zones: false,
+  layer: Overlay,
+  hide_plugin_info: true,
+  close_on_click: true,
+  show_results_immediately: true,
+  max_entries: Some(10),
+
+  // Apps, calculator (rink), shell commands, symbols.
+  plugins: [
+    "/usr/lib/anyrun/libapplications.so",
+    "/usr/lib/anyrun/librink.so",
+    "/usr/lib/anyrun/libshell.so",
+    "/usr/lib/anyrun/libsymbols.so",
+  ],
+
+  keybinds: [
+    Keybind(key: "Return", action: Select),
+    Keybind(key: "Up", action: Up),
+    Keybind(key: "Down", action: Down),
+    Keybind(key: "ISO_Left_Tab", action: Up, shift: true),
+    Keybind(key: "Tab", action: Down),
+    Keybind(key: "Escape", action: Close),
+  ],
+)

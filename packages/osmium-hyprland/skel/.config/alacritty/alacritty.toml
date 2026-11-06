@@ -1,0 +1,11 @@
+[font]
+normal = { family = "JetBrainsMono Nerd Font" }
+size = 11
+
+[window]
+opacity = 0.92
+padding = { x = 8, y = 8 }
+
+[colors.primary]
+background = "#1b1f27"
+foreground = "#d8dee9"

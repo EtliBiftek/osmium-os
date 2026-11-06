@@ -1,9 +1,9 @@
 -- OsmiumOS default Hyprland config (Lua, Hyprland >= 0.57). It is yours: edit freely.
 
 local mainMod  = "SUPER"
-local terminal = "kitty"
-local menu     = "fuzzel"
-local files    = "thunar"
+local terminal = "alacritty"
+local menu     = "anyrun"
+local files    = "cosmic-files"
 
 hl.monitor({ output = "", mode = "preferred", position = "auto", scale = "auto" })
 
@@ -11,11 +11,11 @@ hl.env("XCURSOR_SIZE", "24")
 hl.env("HYPRCURSOR_SIZE", "24")
 
 hl.on("hyprland.start", function()
-    hl.exec_cmd("waybar")
+    hl.exec_cmd("ironbar")
     hl.exec_cmd("swaync")
     hl.exec_cmd("hypridle")
     hl.exec_cmd("systemctl --user start hyprpolkitagent")
-    hl.exec_cmd("wl-paste --watch cliphist store")
+    hl.exec_cmd("swayosd-server")
 end)
 
 hl.config({
@@ -62,7 +62,6 @@ hl.bind(mainMod .. " + Space",  hl.dsp.exec_cmd(menu))
 hl.bind(mainMod .. " + E",      hl.dsp.exec_cmd(files))
 hl.bind(mainMod .. " + L",      hl.dsp.exec_cmd("hyprlock"))
 hl.bind(mainMod .. " + N",      hl.dsp.exec_cmd("swaync-client -t -sw"))
-hl.bind(mainMod .. " + SHIFT + V", hl.dsp.exec_cmd("cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"))
 hl.bind("Print", hl.dsp.exec_cmd('grim -g "$(slurp)" - | wl-copy'))
 
 -- Windows
@@ -85,8 +84,8 @@ end
 
 -- Media keys
 local media = { locked = true, repeating = true }
-hl.bind("XF86AudioRaiseVolume",  hl.dsp.exec_cmd("wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@ 5%+"), media)
-hl.bind("XF86AudioLowerVolume",  hl.dsp.exec_cmd("wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"), media)
-hl.bind("XF86AudioMute",         hl.dsp.exec_cmd("wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle"), media)
-hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%+"), media)
-hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("brightnessctl -e4 -n2 set 5%-"), media)
+hl.bind("XF86AudioRaiseVolume",  hl.dsp.exec_cmd("swayosd-client --output-volume raise"), media)
+hl.bind("XF86AudioLowerVolume",  hl.dsp.exec_cmd("swayosd-client --output-volume lower"), media)
+hl.bind("XF86AudioMute",         hl.dsp.exec_cmd("swayosd-client --output-volume mute-toggle"), media)
+hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("swayosd-client --brightness raise"), media)
+hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("swayosd-client --brightness lower"), media)

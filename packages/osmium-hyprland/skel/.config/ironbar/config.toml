@@ -1,0 +1,27 @@
+position = "top"
+height = 32
+
+[[start]]
+type = "workspaces"
+
+[[center]]
+type = "clock"
+format = "%H:%M  %d.%m.%Y"
+
+# Click opens a mixer (replaces pavucontrol).
+[[end]]
+type = "volume"
+
+[[end]]
+type = "battery"
+show_if = "ls /sys/class/power_supply/ | grep --quiet '^BAT'"
+
+# Clipboard history (replaces cliphist).
+[[end]]
+type = "clipboard"
+
+[[end]]
+type = "tray"
+
+[[end]]
+type = "notifications"

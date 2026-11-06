@@ -8,9 +8,9 @@ url="https://github.com/EtliBiftek/osmium-os"
 license=('unknown')
 depends=(
   hyprland hypridle hyprlock hyprpolkitagent xdg-desktop-portal-hyprland
-  waybar swaync fuzzel kitty thunar
-  grim slurp wl-clipboard cliphist brightnessctl
-  pipewire pipewire-pulse wireplumber pavucontrol
+  ironbar swaync anyrun alacritty cosmic-files swayosd
+  grim slurp wl-clipboard
+  pipewire pipewire-pulse wireplumber
   qt5-wayland qt6-wayland polkit
   ttf-jetbrains-mono-nerd noto-fonts noto-fonts-emoji papirus-icon-theme
 )
