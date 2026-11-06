@@ -1,0 +1,39 @@
+# Maintainer: EtliBiftek
+# Built from this repo's settings/ crate; osmium-build sets OSMIUM_SRC to the repo root.
+pkgname=osmium-settings
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="OsmiumOS settings panel (Rust, iced)"
+arch=('x86_64')
+url="https://github.com/EtliBiftek/osmium-os"
+license=('MIT')
+depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'osmium-tools')
+makedepends=('cargo')
+
+_cargo() {
+  cargo "$@" --release --locked \
+    --manifest-path "${OSMIUM_SRC:?build with osmium-build}/settings/Cargo.toml" \
+    --target-dir "$srcdir/target"
+}
+
+build() {
+  _cargo build
+}
+
+check() {
+  _cargo test
+}
+
+package() {
+  install -Dm644 "$OSMIUM_SRC/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm755 "$srcdir/target/release/osmium-settings" -t "$pkgdir/usr/bin/"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/osmium-settings.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=OsmiumOS Settings
+Name[tr]=OsmiumOS Ayarlar
+Exec=osmium-settings
+Icon=preferences-system
+Categories=Settings;System;
+DESKTOP
+}

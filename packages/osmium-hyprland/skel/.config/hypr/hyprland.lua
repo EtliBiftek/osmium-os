@@ -63,6 +63,7 @@ hl.bind(mainMod .. " + E",      hl.dsp.exec_cmd(files))
 hl.bind(mainMod .. " + L",      hl.dsp.exec_cmd("hyprlock"))
 hl.bind(mainMod .. " + N",      hl.dsp.exec_cmd("swaync-client -t -sw"))
 hl.bind(mainMod .. " + M",      hl.dsp.exec_cmd("osmium-mode menu"))
+hl.bind(mainMod .. " + I",      hl.dsp.exec_cmd("osmium-settings"))
 hl.bind("Print", hl.dsp.exec_cmd('grim -g "$(slurp)" - | wl-copy'))
 
 -- Windows
@@ -90,3 +91,8 @@ hl.bind("XF86AudioLowerVolume",  hl.dsp.exec_cmd("swayosd-client --output-volume
 hl.bind("XF86AudioMute",         hl.dsp.exec_cmd("swayosd-client --output-volume mute-toggle"), media)
 hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("swayosd-client --brightness raise"), media)
 hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("swayosd-client --brightness lower"), media)
+
+-- Appearance chosen in the settings app (Super+I). Optional: missing file is fine.
+local settings = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/hypr/osmium-settings.lua"
+local chunk = loadfile(settings)
+if chunk then chunk() end

@@ -34,6 +34,10 @@ Live user: `osmium` (passwordless sudo).
   into one text file; `publish <file>` makes it a public gist link; `try <link>` shows every line
   that can start a program, applies the theme and rolls back unless you confirm within 30 s;
   `undo` restores what the last `try` replaced.
+- `osmium-settings` (`Super+I`): GUI for appearance (gaps, rounding, blur, animations, keyboard),
+  modes, config history and update checks. Appearance goes to `~/.config/hypr/osmium-settings.lua`.
+- `osmium-ai`: offline assistant on a local Ollama model (`osmium-ai setup`, `ask`, `fix`). It only
+  proposes commands; each one runs only after you type `evet` (dangerous ones: `çalýþtýr`).
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
 

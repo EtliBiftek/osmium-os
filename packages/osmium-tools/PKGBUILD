@@ -1,9 +1,9 @@
 # Maintainer: EtliBiftek
 # Built from this repo's tools/ crate; osmium-build sets OSMIUM_SRC to the repo root.
 pkgname=osmium-tools
-pkgver=0.4.0
+pkgver=0.5.0
 pkgrel=1
-pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, installer helper"
+pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, Windows migration, local AI assistant, installer helper"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('MIT')
@@ -15,6 +15,7 @@ optdepends=(
   'power-profiles-daemon: osmium-mode power profiles'
   'libnotify: osmium-update desktop notifications'
   'github-cli: osmium-share publish'
+  'ollama: osmium-ai local model backend'
 )
 makedepends=('cargo')
 
@@ -27,8 +28,9 @@ build() {
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   local data="$OSMIUM_SRC/tools/data"
-  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history,update,share} -t "$pkgdir/usr/bin/"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history,update,share,ai} -t "$pkgdir/usr/bin/"
   install -Dm644 "$data"/modes/*.mode -t "$pkgdir/usr/share/osmium/modes/"
+  install -Dm644 "$data"/ai.conf -t "$pkgdir/usr/share/osmium/"
   install -Dm644 "$data"/systemd/*.{service,timer} -t "$pkgdir/usr/lib/systemd/user/"
   # Enabled for every user by default; `systemctl --user disable <name>.timer` opts out.
   install -d "$pkgdir/usr/lib/systemd/user/timers.target.wants"

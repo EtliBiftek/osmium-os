@@ -25,6 +25,10 @@ jobs:
           install -o checker -m 644 packages/osmium-hyprland/skel/.config/hypr/hyprland.lua /tmp/hyprland.lua
           install -d -o checker -m 700 /tmp/xdg
           runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.lua
+          # The settings app's output must load too.
+          { cat /tmp/hyprland.lua; cat settings/sample-settings.lua; } > /tmp/settings.lua
+          chown checker /tmp/settings.lua
+          runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/settings.lua
           # Each mode's hypr lines must also be valid Lua for this Hyprland.
           for m in tools/data/modes/*.mode; do
             { cat /tmp/hyprland.lua; sed -n 's/^hypr *= *//p' "$m"; } > /tmp/mode.lua

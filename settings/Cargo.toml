@@ -1,0 +1,14 @@
+[package]
+name = "osmium-settings"
+version = "0.1.0"
+edition = "2024"
+description = "OsmiumOS settings panel"
+license = "MIT"
+publish = false
+
+[dependencies]
+# CPU renderer only: no GPU stack to build or ship.
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "wayland", "x11", "thread-pool", "crisp"] }
+
+[profile.release]
+strip = true
