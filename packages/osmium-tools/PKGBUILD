@@ -9,7 +9,7 @@ url="https://github.com/EtliBiftek/osmium-os"
 license=('MIT')
 depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig')
 optdepends=(
-  'hyprland: osmium-mode'
+  'hyprland-rust: osmium-mode'
   'anyrun: osmium-mode menu'
   'swaync: osmium-mode notifications'
   'power-profiles-daemon: osmium-mode power profiles'

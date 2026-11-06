@@ -1,4 +1,8 @@
--- OsmiumOS default Hyprland config (Lua, Hyprland >= 0.57). It is yours: edit freely.
+-- OsmiumOS default config for hyprland-rust (Lua). It is yours: edit freely.
+-- hyprland-rust turns every hl.* call into a hyprlang line: hl.on only knows
+-- "hyprland.start" (exec-once), Lua function binds/timers are config errors, and some
+-- options below are accepted but not drawn yet (blur, shadow, animations, rounding,
+-- misc.background_color, 2nd gradient colour, monitors, gestures). Check: hyprland-rust --check-config
 -- Theme: synthwave. Palette: #0b0221 night, #1a1033 dusk, #ff2bd6 neon pink, #00e5ff cyan, #ffb000 sun.
 
 local mainMod  = "SUPER"
@@ -6,12 +10,20 @@ local terminal = "alacritty"
 local menu     = "anyrun"
 local files    = "cosmic-files"
 
+-- Accepted, ignored for now: hyprland-rust drives the first connected monitor only.
 hl.monitor({ output = "", mode = "preferred", position = "auto", scale = "auto" })
 
 hl.env("XCURSOR_SIZE", "24")
 hl.env("HYPRCURSOR_SIZE", "24")
+-- hyprland-rust does not export these itself (portals, hyprpolkitagent, toolkits read them).
+hl.env("XDG_CURRENT_DESKTOP", "Hyprland")
+hl.env("XDG_SESSION_TYPE", "wayland")
+hl.env("XDG_SESSION_DESKTOP", "Hyprland")
 
+-- Only "hyprland.start" is supported: calls inside become exec-once.
 hl.on("hyprland.start", function()
+    -- Systemd user services (hyprpolkitagent) need the session variables.
+    hl.exec_cmd("dbus-update-activation-environment --systemd WAYLAND_DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE HYPRLAND_INSTANCE_SIGNATURE")
     hl.exec_cmd("awww-daemon")
     hl.exec_cmd("sleep 1 && awww img --transition-type grow /usr/share/backgrounds/osmium/synthwave.png")
     hl.exec_cmd("ironbar")
@@ -36,6 +48,7 @@ hl.config({
     decoration = {
         rounding = 6,
         blur   = { enabled = true, size = 6, passes = 2 },
+        -- (blur/shadow/rounding: accepted, not rendered by hyprland-rust yet.)
         -- Pink glow instead of a dark drop shadow.
         shadow = { enabled = true, range = 18, render_power = 2, color = 0x66ff2bd6 },
     },
@@ -69,6 +82,7 @@ hl.bind(mainMod .. " + L",      hl.dsp.exec_cmd("hyprlock"))
 hl.bind(mainMod .. " + N",      hl.dsp.exec_cmd("swaync-client -t -sw"))
 hl.bind(mainMod .. " + M",      hl.dsp.exec_cmd("osmium-mode menu"))
 hl.bind(mainMod .. " + I",      hl.dsp.exec_cmd("osmium-settings"))
+-- Needs wlr-screencopy, which hyprland-rust does not offer yet: grim fails until it does.
 hl.bind("Print", hl.dsp.exec_cmd('grim -g "$(slurp)" - | wl-copy'))
 
 -- Windows
@@ -98,9 +112,10 @@ hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("swayosd-client --brightness ra
 hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("swayosd-client --brightness lower"), media)
 
 -- Appearance chosen in the settings app (Super+I). Optional: missing file is fine.
-local settings = (os.getenv("XDG_CONFIG_HOME") or (os.getenv("HOME") .. "/.config")) .. "/hypr/osmium-settings.lua"
+-- pcall: an error inside a Lua config discards the whole config, so a broken settings file must not.
+local settings = (os.getenv("XDG_CONFIG_HOME") or ((os.getenv("HOME") or "") .. "/.config")) .. "/hypr/osmium-settings.lua"
 local chunk = loadfile(settings)
-if chunk then chunk() end
+if chunk then pcall(chunk) end
 
 -- First-login welcome window (osmium-welcome) floats in the middle.
 hl.window_rule({

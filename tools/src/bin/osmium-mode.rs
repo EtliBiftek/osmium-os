@@ -1,13 +1,17 @@
-//! Switches desktop modes: one key changes Hyprland settings, power profile,
-//! notifications, idle lock and launched apps together.
+//! Switches desktop modes: one key changes compositor (hyprland-rust) settings,
+//! power profile, notifications, idle lock and launched apps together.
 //!
 //!   osmium-mode list | current | set <mode> | menu
 //!
 //! Modes are `<id>.mode` files in ~/.config/osmium/modes (yours win) and
 //! /usr/share/osmium/modes (defaults). Every switch starts from a clean
 //! `hyprctl reload`, so modes never stack.
+//!
+//! `hypr = <option> <value>` lines are sent as `hyprctl keyword <option> <value>`
+//! (hyprland-rust has no `hyprctl eval`), e.g. `hypr = general:gaps_in 0`.
+//! `exec` lines run through `hyprctl dispatch exec`.
 
-use osmium_tools::{Result, config_home, exit_on_err, run, state_home, succeeds};
+use osmium_tools::{Result, config_home, exit_on_err, output, run, state_home, succeeds};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -60,12 +64,22 @@ fn parse(id: &str, text: &str) -> Result<Mode> {
             "power" => m.power = Some(value),
             "notifications" => m.notifications = Some(on_off(&value)?),
             "idle" => m.idle = Some(on_off(&value)?),
-            "hypr" => m.hypr.push(value),
+            "hypr" => {
+                if split_opt(&value).is_none() {
+                    return Err(err("hypr expects `<option> <value>`"));
+                }
+                m.hypr.push(value)
+            }
             "exec" => m.exec.push(value),
             _ => return Err(err(&format!("unknown key `{key}`"))),
         }
     }
     Ok(m)
+}
+
+/// `"general:gaps_in 0"` into (`"general:gaps_in"`, `"0"`).
+fn split_opt(s: &str) -> Option<(&str, &str)> {
+    s.split_once(char::is_whitespace).map(|(k, v)| (k, v.trim())).filter(|(_, v)| !v.is_empty())
 }
 
 /// All modes by id; user files override system defaults.
@@ -101,30 +115,28 @@ fn list() -> Result {
     Ok(())
 }
 
-/// Lua long-bracket string, so commands need no escaping.
-fn lua_str(s: &str) -> String {
-    let mut eq = String::new();
-    while s.contains(&format!("]{eq}]")) {
-        eq.push('=');
+/// Runs `hyprctl <args>`. hyprctl exits 0 even when the compositor refuses,
+/// and then prints the reason instead of `ok`, so check the reply.
+fn hypr_ctl(args: &[&str]) -> Result {
+    let reply = output(Command::new("hyprctl").args(args))?;
+    match reply.trim() {
+        "ok" => Ok(()),
+        other => Err(format!("hyprctl {}: {other}", args.join(" "))),
     }
-    format!("[{eq}[{s}]{eq}]")
-}
-
-fn hypr_eval(code: &str) -> Result {
-    run(Command::new("hyprctl").args(["eval", code]))
 }
 
 fn hypr_exec(cmd: &str) -> Result {
-    hypr_eval(&format!("hl.exec_cmd({})", lua_str(cmd)))
+    hypr_ctl(&["dispatch", "exec", cmd])
 }
 
 fn set(id: &str) -> Result {
     let modes = load()?;
     let m = modes.get(id).ok_or_else(|| format!("unknown mode `{id}` (see: osmium-mode list)"))?;
 
-    run(Command::new("hyprctl").arg("reload"))?;
-    for code in &m.hypr {
-        hypr_eval(code)?;
+    hypr_ctl(&["reload"])?;
+    for opt in &m.hypr {
+        let (key, value) = split_opt(opt).ok_or_else(|| format!("bad hypr line `{opt}`"))?;
+        hypr_ctl(&["keyword", key, value])?;
     }
     // Optional services: warn and keep going, the rest of the mode still applies.
     if let Some(p) = &m.power {
@@ -147,7 +159,8 @@ fn set(id: &str) -> Result {
     let state = state_file()?;
     fs::create_dir_all(state.parent().unwrap()).map_err(|e| format!("{}: {e}", state.display()))?;
     fs::write(&state, &m.id).map_err(|e| format!("{}: {e}", state.display()))?;
-    warn(run(Command::new("hyprctl").args(["notify", "1", "2000", "0", &format!("Mod: {}", m.name)])));
+    // `hyprctl notify` is validated but never drawn by hyprland-rust; swaync shows this one.
+    warn(run(Command::new("notify-send").args(["-t", "2000", &format!("Mod: {}", m.name)])));
     Ok(())
 }
 
@@ -185,20 +198,27 @@ mod tests {
         let m = parse(
             "oyun",
             "# comment\nname = Oyun modu\npower = performance\nnotifications = off\nidle = off\n\
-             hypr = hl.config({ animations = { enabled = false } })\nexec = steam\nexec = discord\n",
+             hypr = animations:enabled false\nexec = steam\nexec = discord\n",
         )
         .unwrap();
         assert_eq!(m.name, "Oyun modu");
         assert_eq!(m.power.as_deref(), Some("performance"));
         assert_eq!((m.notifications, m.idle), (Some(false), Some(false)));
-        assert_eq!(m.hypr, ["hl.config({ animations = { enabled = false } })"]);
+        assert_eq!(m.hypr, ["animations:enabled false"]);
         assert_eq!(m.exec, ["steam", "discord"]);
     }
 
     #[test]
     fn value_may_contain_equals() {
-        let m = parse("x", "hypr = hl.config({ general = { gaps_in = 0 } })").unwrap();
-        assert_eq!(m.hypr, ["hl.config({ general = { gaps_in = 0 } })"]);
+        let m = parse("x", "exec = env A=1 steam").unwrap();
+        assert_eq!(m.exec, ["env A=1 steam"]);
+    }
+
+    #[test]
+    fn hypr_needs_option_and_value() {
+        assert_eq!(split_opt("general:gaps_in 0"), Some(("general:gaps_in", "0")));
+        assert_eq!(split_opt("general:col.active_border rgba(ff2bd6ff)  "), Some(("general:col.active_border", "rgba(ff2bd6ff)")));
+        assert!(parse("x", "hypr = general:gaps_in").unwrap_err().contains("hypr expects"));
     }
 
     #[test]
@@ -206,13 +226,6 @@ mod tests {
         assert!(parse("x", "nonsense").unwrap_err().contains("line 1"));
         assert!(parse("x", "idle = maybe").is_err());
         assert!(parse("x", "colour = red").unwrap_err().contains("unknown key"));
-    }
-
-    #[test]
-    fn lua_str_never_closes_early() {
-        assert_eq!(lua_str("steam"), "[[steam]]");
-        assert_eq!(lua_str("a]]b"), "[=[a]]b]=]");
-        assert_eq!(lua_str("a]]b]=]c"), "[==[a]]b]=]c]==]");
     }
 
     #[test]

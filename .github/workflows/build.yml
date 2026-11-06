@@ -18,24 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
-        run: pacman -Syu --noconfirm base-devel git python rust github-cli hyprland pacman-contrib librsvg
-      - name: Verify Hyprland config
-        run: |
-          useradd -m checker
-          install -o checker -m 644 packages/osmium-hyprland/skel/.config/hypr/hyprland.lua /tmp/hyprland.lua
-          install -d -o checker -m 700 /tmp/xdg
-          runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.lua
-          # The settings app's output must load too.
-          { cat /tmp/hyprland.lua; cat settings/sample-settings.lua; } > /tmp/settings.lua
-          chown checker /tmp/settings.lua
-          runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/settings.lua
-          # Each mode's hypr lines must also be valid Lua for this Hyprland.
-          for m in tools/data/modes/*.mode; do
-            { cat /tmp/hyprland.lua; sed -n 's/^hypr *= *//p' "$m"; } > /tmp/mode.lua
-            chown checker /tmp/mode.lua
-            echo "== $m"
-            runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/mode.lua
-          done
+        # Build deps of our packages (osmium-build runs makepkg with --nodeps).
+        run: pacman -Syu --noconfirm base-devel git python rust github-cli pacman-contrib librsvg wayland libxkbcommon libinput seatd systemd-libs libdrm mesa libglvnd
       - name: Test tools
         run: cargo test --locked --manifest-path tools/Cargo.toml
       - name: Smoke-test osmium-update against live Arch News
@@ -51,6 +35,31 @@ jobs:
           OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo
           OSMIUM_GPG_KEY_ID: ${{ secrets.OSMIUM_GPG_KEY_ID }}
         run: cargo run --release --locked --manifest-path tools/Cargo.toml --bin osmium-build -- packages
+      - name: Check configs with the compositor we ship
+        run: |
+          pacman -U --noconfirm repo/hyprland-rust-[0-9]*.pkg.tar.zst
+          useradd -m checker
+          cp -r packages/osmium-hyprland/skel/.config /home/checker/ && chown -R checker /home/checker
+          # Config must parse with zero errors (unsupported hl.* calls count as errors).
+          runuser -u checker -- hyprland-rust --check-config -c /home/checker/.config/hypr/hyprland.lua
+          { cat /home/checker/.config/hypr/hyprland.lua; cat settings/sample-settings.lua; } > /tmp/settings.lua
+          runuser -u checker -- hyprland-rust --check-config -c /tmp/settings.lua
+          # Every mode's hypr line must be accepted by a running (headless) compositor.
+          install -d -o checker -m 700 /tmp/xdg
+          cat > /tmp/modes.sh <<'SH'
+          export XDG_RUNTIME_DIR=/tmp/xdg
+          hyprland-rust --backend headless >/tmp/hr.log 2>&1 &
+          for i in $(seq 20); do hyprctl version >/dev/null 2>&1 && break; sleep 0.5; done
+          rc=0
+          for f in tools/data/modes/*.mode; do
+            sed -n 's/^hypr *= *//p' "$f" | while read -r l; do
+              r=$(hyprctl keyword $l); [ "$r" = ok ] || { echo "$f: $l -> $r"; exit 1; }
+            done || rc=1
+          done
+          kill %1
+          exit $rc
+          SH
+          runuser -u checker -- sh /tmp/modes.sh || { cat /tmp/hr.log; exit 1; }
       - name: Publish pacman repo
         env:
           GH_TOKEN: ${{ github.token }}

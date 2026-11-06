@@ -3,7 +3,11 @@ name = Oyun
 power = performance
 notifications = off
 idle = off
-hypr = hl.config({ animations = { enabled = false } })
-hypr = hl.config({ decoration = { blur = { enabled = false }, shadow = { enabled = false } } })
-hypr = hl.config({ general = { gaps_in = 0, gaps_out = 0 } })
+# Sent as `hyprctl keyword <option> <value>`. Gaps work now; animations, blur and shadow are
+# accepted by hyprland-rust but not rendered yet, so those three only matter once it draws them.
+hypr = general:gaps_in 0
+hypr = general:gaps_out 0
+hypr = animations:enabled false
+hypr = decoration:blur:enabled false
+hypr = decoration:shadow:enabled false
 # exec = steam

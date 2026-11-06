@@ -1,0 +1,38 @@
+# Maintainer: EtliBiftek
+# The user's own Rust/Smithay reimplementation of Hyprland, pinned to a reviewed commit.
+pkgname=hyprland-rust
+_commit=ef743d46ad661c7a975e96ce80ee7504645e6cbf
+pkgver=0.1.0.r${_commit:0:7}
+pkgrel=1
+pkgdesc="Hyprland-compatible dynamic tiling Wayland compositor written in Rust"
+arch=('x86_64')
+url="https://github.com/EtliBiftek/hyprland-rust"
+license=('BSD-3-Clause' 'MIT')
+depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libinput' 'seatd' 'systemd-libs' 'libdrm' 'mesa' 'libglvnd')
+makedepends=('cargo')
+provides=('hyprctl')
+# Both ship /usr/bin/hyprctl.
+conflicts=('hyprland')
+source=("$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
+sha256sums=('1c56d517d11b95e5b61cc97fe4c85f3d5f7d45adcec13b886280f65da242a53d')
+
+build() {
+  cd "$pkgname-$_commit"
+  cargo build --release --locked --target-dir "$srcdir/target"
+}
+
+package() {
+  cd "$pkgname-$_commit"
+  install -Dm755 "$srcdir"/target/release/{hyprland-rust,hyprctl} -t "$pkgdir/usr/bin/"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 docs/SMITHAY-LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 examples/hyprland.lua -t "$pkgdir/usr/share/doc/$pkgname/"
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/hyprland-rust.desktop" <<DESKTOP
+[Desktop Entry]
+Name=Hyprland (Rust)
+Comment=OsmiumOS tiling compositor
+Exec=hyprland-rust --backend tty
+Type=Application
+DesktopNames=Hyprland
+DESKTOP
+}
