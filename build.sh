@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 PROFILE="$ROOT/work/profile-$EDITION"
 
 rm -rf "$PROFILE"
+mkdir -p "$ROOT/work"
 cp -r /usr/share/archiso/configs/releng "$PROFILE"
 for layer in "$ROOT/common" "$ROOT/editions/$EDITION"; do
   [[ -d "$layer/airootfs" ]] && cp -rT "$layer/airootfs" "$PROFILE/airootfs"
