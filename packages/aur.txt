@@ -1,0 +1,2 @@
+# name  pinned AUR commit (review the PKGBUILD diff before bumping)
+calamares 167151beb537c06cb75c8dbfd409799ba308bb66

@@ -13,7 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
-        run: pacman -Syu --noconfirm base-devel github-cli hyprland
+        run: pacman -Syu --noconfirm base-devel git python github-cli hyprland
       - name: Verify Hyprland config
         run: |
           useradd -m checker
@@ -21,6 +21,8 @@ jobs:
           install -d -o checker -m 700 /tmp/xdg
           runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.lua
       - name: Build packages
+        env:
+          OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo
         run: bash build-packages.sh
       - name: Publish pacman repo
         env:
@@ -29,6 +31,10 @@ jobs:
           gh release view repo -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create repo -R "$GITHUB_REPOSITORY" --title "Package repo" --notes "pacman repo for OsmiumOS" --latest=false
           gh release upload repo repo/* -R "$GITHUB_REPOSITORY" --clobber
+          # Drop package files no longer in the repo db.
+          for a in $(gh release view repo -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
+            [ -e "repo/$a" ] || gh release delete-asset repo "$a" -R "$GITHUB_REPOSITORY" -y
+          done
 
   iso:
     needs: packages
