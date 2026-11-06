@@ -17,9 +17,9 @@ jobs:
       - name: Verify Hyprland config
         run: |
           useradd -m checker
-          install -o checker -m 644 packages/osmium-hyprland/skel/.config/hypr/hyprland.conf /tmp/hyprland.conf
+          install -o checker -m 644 packages/osmium-hyprland/skel/.config/hypr/hyprland.lua /tmp/hyprland.lua
           install -d -o checker -m 700 /tmp/xdg
-          runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.conf
+          runuser -u checker -- env XDG_RUNTIME_DIR=/tmp/xdg Hyprland --verify-config --config /tmp/hyprland.lua
       - name: Build packages
         run: bash build-packages.sh
       - name: Publish pacman repo
