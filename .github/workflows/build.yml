@@ -45,8 +45,7 @@ jobs:
         env:
           KEY: ${{ secrets.OSMIUM_GPG_PRIVATE_KEY }}
         run: |
-          if [ -n "$KEY" ]; then printf '%s
-' "$KEY" | gpg --batch --import; else echo "no signing key: repo stays unsigned"; fi
+          if [ -n "$KEY" ]; then echo "$KEY" | gpg --batch --import; else echo "no signing key: repo stays unsigned"; fi
       - name: Build packages
         env:
           OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo
