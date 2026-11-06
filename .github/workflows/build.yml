@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install tools
-        run: pacman -Syu --noconfirm base-devel git python rust github-cli hyprland
+        run: pacman -Syu --noconfirm base-devel git python rust github-cli hyprland pacman-contrib
       - name: Verify Hyprland config
         run: |
           useradd -m checker
@@ -34,6 +34,9 @@ jobs:
           done
       - name: Test tools
         run: cargo test --locked --manifest-path tools/Cargo.toml
+      - name: Smoke-test osmium-update against live Arch News
+        run: |
+          cargo run -q --locked --manifest-path tools/Cargo.toml --bin osmium-update -- check || [ $? -eq 2 ]
       - name: Build packages
         env:
           OSMIUM_REPO: https://github.com/${{ github.repository }}/releases/download/repo

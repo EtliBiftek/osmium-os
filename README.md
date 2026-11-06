@@ -27,5 +27,8 @@ Live user: `osmium` (passwordless sudo).
 
 - `osmium-mode` (`Super+M`): switch Normal / Oyun / Çalışma / Sunum modes. Add your own as
   `~/.config/osmium/modes/<id>.mode` (keys: `name`, `power`, `notifications`, `idle`, `hypr`, `exec`).
+- `osmium-update`: before `pacman -Syu`, reads Arch News and bug reports opened in the last 7 days
+  for the pending packages. A risky update is held as a whole (never a partial upgrade) for up to
+  3 days; `osmium-update --force` skips the hold. A daily timer sends a notification.
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.

@@ -1,0 +1,8 @@
+[Unit]
+Description=Check pending OsmiumOS updates for known risks
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/osmium-update notify
+Nice=19
