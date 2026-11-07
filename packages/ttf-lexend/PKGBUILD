@@ -1,0 +1,20 @@
+# Maintainer: EtliBiftek
+# Lexend variable font from google/fonts, pinned. Replaces AUR lexend-fonts-git, whose epoch
+# (1:) puts a `:` in the file name, which GitHub release assets (our repo) cannot carry.
+pkgname=ttf-lexend
+_commit=86aced91de05cd4f96a06838124cca45be337b2b
+pkgver=0.r${_commit:0:7}
+pkgrel=1
+pkgdesc="Lexend variable font (used by the m3ww desktop)"
+arch=('any')
+url="https://github.com/google/fonts/tree/main/ofl/lexend"
+license=('OFL-1.1')
+_raw="https://raw.githubusercontent.com/google/fonts/$_commit/ofl/lexend"
+source=("Lexend-$_commit.ttf::$_raw/Lexend%5Bwght%5D.ttf" "OFL-$_commit.txt::$_raw/OFL.txt")
+sha256sums=('3add53e641fbc81da64da4bb254285e2831b52b029527bc0714e2b9610832ee6'
+            '5da8505887d0fa7fe963445fd58852707fda34adfeb65af25c99d152bab285bd')
+
+package() {
+  install -Dm644 "Lexend-$_commit.ttf" "$pkgdir/usr/share/fonts/TTF/Lexend[wght].ttf"
+  install -Dm644 "OFL-$_commit.txt" "$pkgdir/usr/share/licenses/$pkgname/OFL.txt"
+}

@@ -165,6 +165,10 @@ fn packages(root: &Path) -> Result {
         return Err("calamares package has no Python modules".into());
     }
 
+    // GitHub renames `:` in release asset names, so pacman would 404 on epoch packages.
+    if let Some(p) = pkg_files(&out)?.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(':'))) {
+        return Err(format!("{}: epoch in file name, the GitHub release repo cannot serve it; repackage without an epoch", p.display()));
+    }
     let key = signing_key();
     if public_key(root).is_some() && key.is_none() {
         return Err("keys/osmium.asc is committed but OSMIUM_GPG_KEY_ID is not set: refusing to publish an unsigned repo clients would reject".into());

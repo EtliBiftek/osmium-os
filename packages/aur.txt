@@ -18,4 +18,3 @@ eww 756d212e04e2909b7408f33a8fee16e186d38aa5
 gojq b39beefeb5f6d109e549c516de0237f140866bb5
 python-pywal 2c8031192b9b1b05136d06653b6ec4dfcd467725
 python-desktop-entry-lib e131382cf5af42bd55bd1dc1479cad5af1ac7e7c
-lexend-fonts-git adc286e937e97bfcad1bfd8cebc4e4dd391baea9

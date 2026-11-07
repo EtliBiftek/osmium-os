@@ -2,7 +2,7 @@
 # end-4's archived "m3ww" desktop (EWW widgets, Material Design 3) as an OsmiumOS dots set.
 # Applied with `osmium-dots apply m3ww`: everything under /usr/share/osmium/dots/m3ww/home/ mirrors $HOME.
 # AUR-only deps (eww gojq wlogout python-pywal python-material-color-utilities
-# python-desktop-entry-lib lexend-fonts-git) are built from packages/aur.txt into the osmium repo.
+# python-desktop-entry-lib) are built from packages/aur.txt into the osmium repo; ttf-lexend is ours.
 pkgname=osmium-dots-m3ww
 _commit=2433298bddf6b1597b8e10dba67d26891664db11   # branch "archive" of end-4/dots-hyprland
 pkgver=0.1.0.r${_commit:0:7}
@@ -23,7 +23,7 @@ depends=(
   python python-pillow python-requests boost-libs gtk3
   ttf-jetbrains-mono-nerd ttf-material-symbols-variable
   # from the osmium repo (AUR builds)
-  eww gojq wlogout python-pywal python-material-color-utilities python-desktop-entry-lib lexend-fonts-git
+  eww gojq wlogout python-pywal python-material-color-utilities python-desktop-entry-lib ttf-lexend
 )
 makedepends=(gcc boost cargo)
 provides=('light')
