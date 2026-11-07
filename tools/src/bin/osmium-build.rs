@@ -133,6 +133,7 @@ fn packages(root: &Path) -> Result {
             .arg("-C")
             .arg(&dir)
             .args(["-c", "advice.detachedHead=false", "checkout", "-q", commit]))?;
+        import_pgp_keys(&dir)?;
         build(root, &dir, &out, "-s")?;
     }
 
@@ -212,6 +213,31 @@ fn pkg_files(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Builds one PKGBUILD dir into `out`, unless every output file is already published.
+/// `validpgpkeys` fingerprints from an AUR checkout's .SRCINFO.
+fn pgp_keys(srcinfo: &str) -> Vec<String> {
+    srcinfo
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("validpgpkeys = "))
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_hexdigit()))
+        .collect()
+}
+
+/// makepkg checks signed sources against the builder's keyring: fetch the keys the
+/// PKGBUILD pins (the fingerprint is the trust anchor, the keyserver only delivers it).
+fn import_pgp_keys(dir: &Path) -> Result {
+    let keys = pgp_keys(&fs::read_to_string(dir.join(".SRCINFO")).unwrap_or_default());
+    if keys.is_empty() {
+        return Ok(());
+    }
+    for server in ["hkps://keyserver.ubuntu.com", "hkps://keys.openpgp.org"] {
+        if succeeds(Command::new("sudo").args(["-u", "builder", "gpg", "--batch", "--keyserver", server, "--recv-keys"]).args(&keys)) {
+            return Ok(());
+        }
+    }
+    Err(format!("{}: could not fetch PGP keys {}", dir.display(), keys.join(" ")))
+}
+
 fn build(root: &Path, dir: &Path, out: &Path, flags: &str) -> Result {
     run(Command::new("chown").args(["-R", "builder"]).arg(dir))?;
     let list = output(
@@ -273,6 +299,18 @@ fn sig_path(pkg: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn srcinfo_pgp_keys() {
+        let s = "pkgbase = wlogout
+	validpgpkeys = F4FDB18A9937358364B276E9E25D679AF73C6D2F
+	validpgpkeys = nothex!
+pkgname = wlogout
+";
+        assert_eq!(pgp_keys(s), ["F4FDB18A9937358364B276E9E25D679AF73C6D2F"]);
+        assert!(pgp_keys("pkgbase = x
+").is_empty());
+    }
 
     #[test]
     fn pkgrel_replaced_only_on_its_line() {
