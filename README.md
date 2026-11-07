@@ -44,6 +44,28 @@ Live user: `osmium`.
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
 
+## Compositor
+
+The Hyprland edition runs [hyprland-rust](https://github.com/EtliBiftek/hyprland-rust), not
+upstream Hyprland. `.github/workflows/hyprland-rust-bump.yml` checks its `main` every hour. When
+a newer commit's CI is green, it pins `packages/hyprland-rust/PKGBUILD` to that commit and starts
+an ISO build. Red or unfinished commits are skipped. Run it by hand from the Actions tab.
+
+To update within a minute of a push instead of an hour, add a fine-grained token with
+"Contents: read and write" on osmium-os as the secret `OSMIUM_DISPATCH_TOKEN` in hyprland-rust.
+Then add this job to hyprland-rust's CI, after the build job:
+
+```yaml
+  notify-osmium:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh api repos/EtliBiftek/osmium-os/dispatches -f event_type=hyprland-rust-updated
+        env:
+          GH_TOKEN: ${{ secrets.OSMIUM_DISPATCH_TOKEN }}
+```
+
 ## Signing
 
 The repo is unsigned until you set up a key. Once set up, packages and the repo database are

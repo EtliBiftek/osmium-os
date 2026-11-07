@@ -1,0 +1,76 @@
+name: Follow hyprland-rust
+# Pins packages/hyprland-rust to the newest commit on hyprland-rust's main once that
+# commit's own CI is green, then starts an ISO build.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  # Instant path: hyprland-rust can send this event (needs a token there, see README).
+  repository_dispatch:
+    types: [hyprland-rust-updated]
+
+concurrency:
+  group: hyprland-rust-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write  # commit the new pin
+  actions: write   # start build.yml (a GITHUB_TOKEN push does not trigger it)
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: EtliBiftek/hyprland-rust
+      PKGBUILD: packages/hyprland-rust/PKGBUILD
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # git pull --rebase below
+
+      - name: Find a newer green commit
+        id: check
+        run: |
+          set -euo pipefail
+          current=$(sed -n "s/^_commit=//p" "$PKGBUILD")
+          latest=$(gh api "repos/$UPSTREAM/commits/main" -q .sha)
+          echo "current=$current latest=$latest"
+          if [ "$current" = "$latest" ]; then
+            echo "Already on the newest commit."; exit 0
+          fi
+          # Every check run of that commit must be finished and successful (or skipped).
+          # notify-osmium is the job that sends the instant dispatch: it is still running now.
+          runs=$(gh api "repos/$UPSTREAM/commits/$latest/check-runs?per_page=100" \
+            -q '[.check_runs[] | select(.name != "notify-osmium") | {s: .status, c: .conclusion}]')
+          total=$(echo "$runs" | jq length)
+          pending=$(echo "$runs" | jq '[.[] | select(.s != "completed")] | length')
+          bad=$(echo "$runs" | jq '[.[] | select(.s == "completed" and .c != "success" and .c != "skipped" and .c != "neutral")] | length')
+          if [ "$total" -eq 0 ] || [ "$pending" -gt 0 ]; then
+            echo "::notice::$latest: CI not finished yet, trying again next run."; exit 0
+          fi
+          if [ "$bad" -gt 0 ]; then
+            echo "::warning::$latest: hyprland-rust CI failed, staying on $current."; exit 0
+          fi
+          echo "sha=$latest" >> "$GITHUB_OUTPUT"
+
+      - name: Update the pin
+        if: steps.check.outputs.sha
+        env:
+          SHA: ${{ steps.check.outputs.sha }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/$UPSTREAM/archive/$SHA.tar.gz" -o src.tar.gz
+          sum=$(sha256sum src.tar.gz | cut -d' ' -f1)
+          rm src.tar.gz
+          sed -i "s/^_commit=.*/_commit=$SHA/; s/^sha256sums=.*/sha256sums=('$sum')/" "$PKGBUILD"
+          grep -q "^_commit=$SHA$" "$PKGBUILD" || { echo 'sed missed _commit'; exit 1; }
+          grep -q "^sha256sums=('$sum')$" "$PKGBUILD" || { echo 'sed missed sha256sums'; exit 1; }
+          subject=$(gh api "repos/$UPSTREAM/commits/$SHA" -q '.commit.message | split("\n")[0]')
+          git config user.name "github-actions[bot]"
+          git config user.email "41898729+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(hyprland-rust): bump to ${SHA:0:7}" -m "$UPSTREAM@$SHA: $subject"
+          # main may have moved while we ran.
+          git pull --rebase origin main
+          git push origin HEAD:main
+          gh workflow run build.yml --ref main

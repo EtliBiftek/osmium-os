@@ -1,5 +1,6 @@
 # Maintainer: EtliBiftek
-# The user's own Rust/Smithay reimplementation of Hyprland, pinned to a reviewed commit.
+# The user's own Rust/Smithay reimplementation of Hyprland. _commit and sha256sums are
+# bumped by .github/workflows/hyprland-rust-bump.yml once that commit's CI is green.
 pkgname=hyprland-rust
 _commit=ef743d46ad661c7a975e96ce80ee7504645e6cbf
 pkgver=0.1.0.r${_commit:0:7}
