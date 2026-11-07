@@ -19,13 +19,55 @@ cargo run --release --manifest-path tools/Cargo.toml --bin osmium-build -- iso h
 - `common/`: files and packages shared by every edition
 - `editions/<name>/`: per-edition packages and files
 - `packages/`: our PKGBUILDs; `packages/aur.txt` lists pinned AUR packages
-- `tools/`: Rust crate. `osmium-build` builds the repo and ISOs, `osmium-postinstall` finishes installs
+- `tools/`: Rust crate (std only). `osmium-build` builds the repo and ISOs, `osmium-install` and
+  `osmium-postinstall` install the system, the rest are the desktop tools below
+- `settings/`: `osmium-settings`, an iced GUI
+- `docs/hyprland-rust-gaps.md`: what the compositor still lacks for the shipped desktops
 
-Live user: `osmium`.
+Live user: `osmium` (no password).
+
+## Desktops (dots)
+
+The Hyprland edition ships several ready desktops. `osmium-dots` applies one to your home:
+
+| id | What it is |
+|----|------------|
+| `ii` (default) | end-4's illogical-impulse on Quickshell: AI sidebar (Gemini, Ollama), settings app, overview, Material You colors from the wallpaper |
+| `waffle` | ii's Windows 11 style panel family ("Windoes") |
+| `m3ww` | end-4's archived Material You EWW style, patched for hyprland-rust |
+| `synthwave` | OsmiumOS's own 80s synthwave theme (ironbar, anyrun, alacritty) |
+
+```
+osmium-dots list
+osmium-dots apply waffle
+osmium-dots search catppuccin                         # GitHub repos with topic "hyprland"
+osmium-dots apply github:owner/repo                   # copies only its config dirs
+osmium-dots apply github:owner/repo --mode script     # shows its install script, runs after `çalıştır`
+```
+
+Replaced `~/.config/<dir>` entries go to `~/.local/state/osmium/dots-backup/<time>/`. The login
+session (`osmium-dots session`, used by greetd and the live ISO) applies `ii` on first login.
+end-4's dots are pinned in `packages/osmium-dots-ii` and `packages/osmium-dots-m3ww` (GPL-3.0).
+
+## Installer
+
+The Hyprland live ISO boots into ii and opens `osmium-installer`, a window built from ii's own
+widgets (`~/.config/quickshell/ii/osmium-installer.qml`). It asks for a disk (optional LUKS),
+region, user and desktop (built-in dots or one found on GitHub), then runs
+`sudo osmium-install run`, which:
+
+- partitions GPT (1 GiB ESP + btrfs with `@ @home @cache @log`, zstd:1),
+- unpacks the live squashfs with every core (`unsquashfs`), no downloads,
+- configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 initramfs
+  (no fallback image) and installs GRUB with grub-btrfs snapshots, in parallel where possible.
+
+`osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
+stdin (`key=value` lines). UEFI only. KDE and GNOME editions keep Calamares, which is also on
+the Hyprland ISO for manual partitioning (`sudo calamares`).
 
 ## Tools
 
-- `osmium-mode` (`Super+M`): switch Normal / Oyun / Çalışma / Sunum modes. Add your own as
+- `osmium-mode` (`Super+M` in synthwave): switch Normal / Oyun / Çalışma / Sunum modes. Add your own as
   `~/.config/osmium/modes/<id>.mode` (keys: `name`, `power`, `notifications`, `idle`, `hypr`, `exec`).
 - `osmium-update`: before `pacman -Syu`, reads Arch News and bug reports opened in the last 7 days
   for the pending packages. A risky update is held as a whole (never a partial upgrade) for up to
@@ -34,7 +76,7 @@ Live user: `osmium`.
   into one text file; `publish <file>` makes it a public gist link; `try <link>` shows every line
   that can start a program, applies the theme and rolls back unless you confirm within 30 s;
   `undo` restores what the last `try` replaced.
-- `osmium-settings` (`Super+I`): GUI for appearance (gaps, rounding, blur, animations, keyboard),
+- `osmium-settings` (`Super+I` in synthwave; ii has its own settings app): GUI for appearance (gaps, rounding, blur, animations, keyboard),
   modes, config history and update checks. Appearance goes to `~/.config/hypr/osmium-settings.lua`.
 - `osmium-ai`: offline assistant on a local Ollama model (`osmium-ai setup`, `ask`, `fix`). It only
   proposes commands; each one runs only after you type `evet` (dangerous ones: `çalıştır`).
@@ -50,6 +92,10 @@ The Hyprland edition runs [hyprland-rust](https://github.com/EtliBiftek/hyprland
 upstream Hyprland. `.github/workflows/hyprland-rust-bump.yml` checks its `main` every hour. When
 a newer commit's CI is green, it pins `packages/hyprland-rust/PKGBUILD` to that commit and starts
 an ISO build. Red or unfinished commits are skipped. Run it by hand from the Actions tab.
+
+CI loads every shipped dot with `hyprland-rust --check-config`; errors in third-party dots are
+warnings, so they never block the ISOs. Until hyprland-rust supports `hl.dsp.global`, ii does not
+load (see `docs/hyprland-rust-gaps.md`) and the live ISO falls back to `synthwave`.
 
 To update within a minute of a push instead of an hour, add a fine-grained token with
 "Contents: read and write" on osmium-os as the secret `OSMIUM_DISPATCH_TOKEN` in hyprland-rust.
