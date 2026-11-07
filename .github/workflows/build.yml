@@ -47,7 +47,7 @@ jobs:
           # Third-party dots (ii, m3ww): config errors are reported as warnings, not fatal, so a
           # hyprland-rust gap does not block the ISOs. See docs/hyprland-rust-gaps.md.
           for pkg in repo/osmium-dots-*.pkg.tar.zst; do
-            d=$(mktemp -d); bsdtar -xf "$pkg" -C "$d" usr/share/osmium/dots
+            d=$(mktemp -d); bsdtar -xf "$pkg" -C "$d" usr/share/osmium/dots 2>/dev/null || continue
             for dot in "$d"/usr/share/osmium/dots/*/; do
               id=$(basename "$dot"); h=/home/check-$id
               [ -d "$dot/home/.config/hypr" ] || continue

@@ -26,6 +26,18 @@ not), **not rendered** (parsed or stored, never drawn or applied), **unverified*
 Reading order: tier A blocks a feature or the whole session, tier B degrades
 behaviour, tier C is visual only. Inside a tier the order is by impact.
 
+## Found by CI: fix these first
+
+The OsmiumOS build loads every shipped dot with `hyprland-rust --check-config`
+(step "Check configs with the compositor we ship", warnings only). On `d9010fb`:
+
+| # | Item | Status in hyprland-rust | Who needs it | What the user sees without it | Implementation hint |
+|---|---|---|---|---|---|
+| 0a | `hl.dsp.global(name)` | missing. `"global"` is in the known-dispatcher list but `translate()` in `src/lua_config.rs:1054` has no arm, so it returns `hl.dsp.global is not supported yet`. The hyprlang `global` dispatcher exists (`src/config.rs:476`). | 34 calls in ii's `hypr/hyprland/keybinds.lua` and `general.lua` (`quickshell:searchToggle`, `overviewWorkspacesToggle`, ...). | A Lua error aborts the whole config: ii loads with **0 binds, no autostart**, so no Quickshell shell at all. CI: `hyprland.lua:0: hl.dsp.global is not supported yet`. | Add `"global" => format!("global, {}", a.positional_or("name")?)` (string argument) to `translate()`. |
+| 0b | Lines starting with `##` | bug. `strip_comment` (`src/config.rs:1484`) treats `##` as an escaped `#` everywhere, also at the start of a line, so `####### Keybinds ###` becomes the text `### Keybinds #` and fails as `expected key = value`. In hyprlang a line whose first non-blank char is `#` is always a comment; `##` only escapes inside a value. | m3ww (`hypr/hyprland.conf`, `hypr/keybinds.conf`, 18 lines), and many hyprlang dotfiles use banner comments. | Config errors (the error bar) for every banner line. OsmiumOS works around it by rewriting leading `#`s in m3ww's `prepare()`. | In `strip_comment`, return `""` when `line.trim_start().starts_with('#')`. |
+| 0c | `bindm` on a keyboard key | missing. `bindm: key must be mouse:<code>` (`SUPER, Z, movewindow` in m3ww). Hyprland allows keyboard keys for `bindm` since 0.36. | m3ww `hypr/keybinds.conf:297`. | Config error; the bind is lost (OsmiumOS deletes the line). | Accept a key in `bindm` and start the drag on key press, end on release. |
+| 0d | `debug:damage_tracking` | unknown option. | m3ww `hypr/hyprland.conf:144`. | Config error (OsmiumOS deletes the line). | Accept and ignore like the other `debug:` options. |
+
 ## Tier A: blocks a feature
 
 | # | Item | Status in hyprland-rust | Who needs it | What the user sees without it | Implementation hint |

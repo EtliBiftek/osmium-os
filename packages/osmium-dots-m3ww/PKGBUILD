@@ -38,6 +38,11 @@ prepare() {
   local m; m=$(_m)
   cd "$m/.config"
   rm -f hypr/hypr.conf   # config of the long-dead Hypr, never read
+  # hyprland-rust reads a leading `##` as an escaped `#` (docs/hyprland-rust-gaps.md 0b): one `#`.
+  find hypr -name '*.conf' -exec sed -i 's/^\(\s*\)##*/\1#/' {} +
+  # Not accepted by hyprland-rust (gaps 0c, 0d).
+  sed -i -E '/^bindm *= *[^,]*, *[^m ][^,]*,/d' hypr/keybinds.conf hypr/dirs/keybinds_*.conf
+  sed -i '/damage_tracking/d' hypr/hyprland.conf hypr/dirs/hyprland_*.conf
 
   # --- hyprland-rust compatibility (hyprlang hyprland.conf) ---
   # Turkish keyboard, no ibus: upstream's ibus engines (Bamboo/xkb:us) would override kb_layout.

@@ -9,6 +9,13 @@ hl.on("hyprland.start", function ()
     hl.exec_cmd("osmium-installer")
 end)
 LUA
+  # A Lua error drops the whole config (no shell, no binds). If this hyprland-rust cannot load
+  # ii yet (docs/hyprland-rust-gaps.md), boot the synthwave desktop instead of a blank screen.
+  if ! hyprland-rust --check-config >/dev/null 2>&1; then
+    osmium-dots apply synthwave >/dev/null
+    sed -i '/hypridle/d; /hyprlock/d' ~/.config/hypr/hyprland.lua
+    sed -i 's|^\(\s*\)hl.exec_cmd("ironbar")|&\n\1hl.exec_cmd("osmium-installer")|' ~/.config/hypr/hyprland.lua
+  fi
 fi
 
 # Start the desktop once per boot. No exec: if it fails (e.g. a VM without 3D), getty's
