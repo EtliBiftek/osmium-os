@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install tools
         # Build deps of our packages (osmium-build runs makepkg with --nodeps).
-        run: pacman -Syu --noconfirm base-devel git python rust github-cli pacman-contrib librsvg wayland libxkbcommon libinput seatd systemd-libs libdrm mesa libglvnd
+        run: pacman -Syu --noconfirm base-devel git python rust github-cli pacman-contrib librsvg wayland libxkbcommon libinput seatd systemd-libs libdrm mesa libglvnd boost gtk3
       - name: Test tools
         run: cargo test --locked --manifest-path tools/Cargo.toml
       - name: Smoke-test osmium-update against live Arch News
@@ -44,6 +44,22 @@ jobs:
           runuser -u checker -- hyprland-rust --check-config -c /home/checker/.config/hypr/hyprland.lua
           { cat /home/checker/.config/hypr/hyprland.lua; cat settings/sample-settings.lua; } > /tmp/settings.lua
           runuser -u checker -- hyprland-rust --check-config -c /tmp/settings.lua
+          # Third-party dots (ii, m3ww): config errors are reported as warnings, not fatal, so a
+          # hyprland-rust gap does not block the ISOs. See docs/hyprland-rust-gaps.md.
+          for pkg in repo/osmium-dots-*.pkg.tar.zst; do
+            d=$(mktemp -d); bsdtar -xf "$pkg" -C "$d" usr/share/osmium/dots
+            for dot in "$d"/usr/share/osmium/dots/*/; do
+              id=$(basename "$dot"); h=/home/check-$id
+              [ -d "$dot/home/.config/hypr" ] || continue
+              rm -rf "$h"; cp -a "$dot/home" "$h"; chown -R checker "$h"
+              cfg=$h/.config/hypr/hyprland.lua; [ -f "$cfg" ] || cfg=$h/.config/hypr/hyprland.conf
+              if out=$(runuser -u checker -- env HOME="$h" hyprland-rust --check-config -c "$cfg" 2>&1); then
+                echo "$id: $(echo "$out" | tail -1)"
+              else
+                echo "$out"; echo "::warning title=$id dots on hyprland-rust::$(echo "$out" | tail -1)"
+              fi
+            done
+          done
           # Every mode's hypr line must be accepted by a running (headless) compositor.
           install -d -o checker -m 700 /tmp/xdg
           cat > /tmp/modes.sh <<'SH'

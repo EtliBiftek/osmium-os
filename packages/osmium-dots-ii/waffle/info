@@ -1,0 +1,6 @@
+name=waffle
+title=Windoes (waffle)
+description=Windows 11 görünümlü masaüstü: görev çubuğu, başlat menüsü, eylem merkezi.
+inherits=ii
+source=https://github.com/end-4/dots-hyprland/tree/2f2a376fdb2ad738bf55f693dd0b474b64bb0ab8/dots/.config/quickshell/ii/modules/waffle
+license=GPL-3.0-or-later

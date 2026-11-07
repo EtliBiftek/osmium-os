@@ -1,0 +1,3 @@
+#!/bin/sh
+# OsmiumOS installer UI (ii widgets, Quickshell). The privileged work is `sudo osmium-install run`.
+exec qs -p /usr/share/osmium/dots/ii/home/.config/quickshell/ii/osmium-installer.qml "$@"

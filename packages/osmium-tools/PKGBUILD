@@ -3,7 +3,7 @@
 pkgname=osmium-tools
 pkgver=0.5.0
 pkgrel=1
-pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, Windows migration, local AI assistant, installer helper"
+pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, Windows migration, local AI assistant, installer backend"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('GPL-3.0-or-later')
@@ -29,7 +29,7 @@ build() {
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   local data="$OSMIUM_SRC/tools/data"
-  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,mode,history,update,share,ai,migrate,welcome} -t "$pkgdir/usr/bin/"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,install,dots,mode,history,update,share,ai,migrate,welcome} -t "$pkgdir/usr/bin/"
   install -Dm644 "$data"/modes/*.mode -t "$pkgdir/usr/share/osmium/modes/"
   install -Dm644 "$data"/ai.conf -t "$pkgdir/usr/share/osmium/"
   install -Dm644 "$data"/systemd/*.{service,timer} -t "$pkgdir/usr/lib/systemd/user/"

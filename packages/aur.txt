@@ -1,3 +1,21 @@
 # name  pinned AUR commit (review the PKGBUILD diff before bumping)
 calamares 167151beb537c06cb75c8dbfd409799ba308bb66
 anyrun d20734ea2a045d24d54e8575be58b1986af3a410
+# illogical-impulse (osmium-dots-ii) dependencies that are only in the AUR
+wlogout 9904ef2a49026b70e5288965423ee503c95f09cd
+breeze-plus faf39cfda93ef93a4514e36674bcf5dcb80d3164
+darkly-bin ddb0ec2e8d78285abbf481470ee29b024e5fe048
+ttf-readex-pro 39ba0d6672e2be28c63112b6e68b36ddfa83d06f
+ttf-rubik-vf df5b264003f0d39ba75f42970074ff2465ed527c
+ttf-twemoji b250a6d51a95fac41ec21f634522ad36177938f0
+python-materialyoucolor 7a148d4abba3db45fc042faa0dfb37d329f6d615
+python-material-color-utilities 322049b682991cbad226736ae66ffeb149fb5d68
+python-libsass d6fae13ae57eae6b470b2bbbed61420d1483216c
+# pkgbase of qt6-avif-image-plugin
+qt5-avif-image-plugin 97faecaf6050c738e23a2a37cbe4046bfccef4bb
+# m3ww (osmium-dots-m3ww) dependencies that are only in the AUR
+eww 756d212e04e2909b7408f33a8fee16e186d38aa5
+gojq b39beefeb5f6d109e549c516de0237f140866bb5
+python-pywal 2c8031192b9b1b05136d06653b6ec4dfcd467725
+python-desktop-entry-lib e131382cf5af42bd55bd1dc1479cad5af1ac7e7c
+lexend-fonts-git adc286e937e97bfcad1bfd8cebc4e4dd391baea9

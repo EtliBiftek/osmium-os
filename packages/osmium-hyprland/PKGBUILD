@@ -1,6 +1,6 @@
 # Maintainer: EtliBiftek
 pkgname=osmium-hyprland
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="OsmiumOS ready-to-use Hyprland desktop (synthwave theme, configs, apps)"
 arch=('any')
@@ -24,8 +24,19 @@ build() {
 
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
-  install -d "$pkgdir/etc/skel"
-  cp -rT "$startdir/skel" "$pkgdir/etc/skel"
+  # The synthwave desktop is one of the dots `osmium-dots apply` offers (default: ii).
+  install -d "$pkgdir/usr/share/osmium/dots/synthwave/home"
+  cp -rT "$startdir/skel" "$pkgdir/usr/share/osmium/dots/synthwave/home"
+  install -Dm644 "$startdir/synthwave.info" "$pkgdir/usr/share/osmium/dots/synthwave/info"
+  # Session entry: applies the default dots on first login, then starts hyprland-rust.
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/osmium.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=OsmiumOS
+Comment=hyprland-rust with your OsmiumOS dots
+Exec=osmium-dots session
+Type=Application
+DesktopNames=Hyprland
+DESKTOP
   install -Dm644 "$startdir/usr/share/osmium/greetd.toml" -t "$pkgdir/usr/share/osmium/"
   install -Dm644 "$srcdir/synthwave.png" -t "$pkgdir/usr/share/backgrounds/osmium/"
 }

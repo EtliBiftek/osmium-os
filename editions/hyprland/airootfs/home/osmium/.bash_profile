@@ -1,28 +1,34 @@
-# Live session: seed config from skel once. Drop the screen lock: the live user has no password.
+# Live session: the ii desktop (AI sidebar, settings app) plus the installer window.
 if [[ ! -d ~/.config/hypr ]]; then
-  cp -r /etc/skel/.config ~/
-  sed -i '/hypridle/d; /hyprlock/d' ~/.config/hypr/hyprland.lua
-  # Open the installer when the live desktop starts.
-  sed -i 's|^\(\s*\)hl.exec_cmd("ironbar")|&\n\1hl.exec_cmd("sudo -E calamares")|' ~/.config/hypr/hyprland.lua
+  osmium-dots apply ii >/dev/null
+  # The live user has no password: no idle lock.
+  sed -i '/hypridle/d' ~/.config/hypr/hyprland/execs.lua
+  cat >>~/.config/hypr/custom/execs.lua <<'LUA'
+-- Live ISO: open the installer when the desktop starts.
+hl.on("hyprland.start", function ()
+    hl.exec_cmd("osmium-installer")
+end)
+LUA
 fi
 
-# Start hyprland-rust once per boot. No exec: if it fails (e.g. a VM without 3D), getty's
+# Start the desktop once per boot. No exec: if it fails (e.g. a VM without 3D), getty's
 # autologin would otherwise restart it forever on a black screen.
 # hyprland-rust logs to stdout/stderr (tracing) and has no log file, so capture it ourselves.
 if [[ -z $WAYLAND_DISPLAY && $(tty) == /dev/tty1 && ! -e /run/user/$UID/osmium-tried ]]; then
   touch /run/user/$UID/osmium-tried
   log=/run/user/$UID/hyprland-rust.log
-  hyprland-rust >"$log" 2>&1
+  osmium-dots session >"$log" 2>&1
   status=$?
   if (( status != 0 )); then
-    cat <<EOF
+    cat <<MSG
 
 Masaüstü (hyprland-rust) başlatılamadı (çıkış kodu $status).
 Sanal makinedeysen: ekran kartını VMSVGA yap ve "3D hızlandırma"yı aç,
 ya da QEMU/virt-manager'da virtio-gpu + OpenGL kullan.
 Günlük: $log
-Tekrar denemek için: hyprland-rust    Kurulum için: sudo calamares (Wayland/X gerekir)
+Tekrar denemek için: osmium-dots session
+Kurulum penceresi masaüstüyle açılır (osmium-installer).
 
-EOF
+MSG
   fi
 fi

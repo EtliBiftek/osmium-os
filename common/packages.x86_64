@@ -4,3 +4,7 @@ mesa
 pipewire
 wireplumber
 osmium-calamares-config
+gptfdisk
+dosfstools
+cryptsetup
+squashfs-tools

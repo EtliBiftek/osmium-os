@@ -54,12 +54,17 @@ fn main() {
 }
 
 /// Replaces releng's archiso-only preset, whose config file is removed above.
+/// No fallback image: it doubles initramfs build time; grub-btrfs snapshots are the rescue path.
 const LINUX_PRESET: &str = "\
 ALL_kver='/boot/vmlinuz-linux'
-PRESETS=('default' 'fallback')
+PRESETS=('default')
 default_image='/boot/initramfs-linux.img'
-fallback_image='/boot/initramfs-linux-fallback.img'
-fallback_options='-S autodetect'
+";
+
+/// Fast initramfs: zstd level 1 on all cores (conf.d is read after mkinitcpio.conf).
+const INITCPIO_COMPRESS: &str = "\
+COMPRESSION=\"zstd\"
+COMPRESSION_OPTIONS=(-1 -T0)
 ";
 
 /// Used when the squashfs mirrorlist is all comments (reflector only ran on the live system).
@@ -89,6 +94,8 @@ fn postinstall() -> Result {
     remove_dangling_links(Path::new("/etc/systemd/system"))?;
 
     write("/etc/mkinitcpio.d/linux.preset", LINUX_PRESET)?;
+    fs::create_dir_all("/etc/mkinitcpio.conf.d").map_err(|e| format!("/etc/mkinitcpio.conf.d: {e}"))?;
+    write("/etc/mkinitcpio.conf.d/00-osmium-compress.conf", INITCPIO_COMPRESS)?;
     let mirrors = fs::read_to_string("/etc/pacman.d/mirrorlist").unwrap_or_default();
     if !has_server(&mirrors) {
         write("/etc/pacman.d/mirrorlist", MIRRORLIST)?;
@@ -97,13 +104,17 @@ fn postinstall() -> Result {
     // The live root has an empty password: lock it, admin goes through sudo (wheel).
     run(Command::new("passwd").args(["-l", "root"]))?;
 
-    // The live keyring lived on tmpfs; the installed system needs its own.
-    run(Command::new("pacman-key").arg("--init"))?;
-    run(Command::new("pacman-key").args(["--populate", "archlinux"]))?;
+    // The live keyring lived on tmpfs; the installed system needs its own. Key import is the
+    // slowest step here and independent of the rest, so it runs alongside.
     let signed = Path::new(KEYRING).is_file();
-    if signed {
-        run(Command::new("pacman-key").args(["--populate", "osmium"]))?;
-    }
+    let keys = std::thread::spawn(move || -> Result {
+        run(Command::new("pacman-key").arg("--init"))?;
+        run(Command::new("pacman-key").args(["--populate", "archlinux"]))?;
+        if signed {
+            run(Command::new("pacman-key").args(["--populate", "osmium"]))?;
+        }
+        Ok(())
+    });
 
     let conf = fs::read_to_string("/etc/pacman.conf").map_err(|e| format!("/etc/pacman.conf: {e}"))?;
     if !has_osmium_repo(&conf) {
@@ -130,11 +141,16 @@ fn postinstall() -> Result {
         copy("/usr/share/osmium/greetd.toml", "/etc/greetd/config.toml")?;
     }
 
+    // The ii desktop's bluetooth toggles need bluetoothd (upstream's setup enables it too).
+    if Path::new("/usr/lib/systemd/system/bluetooth.service").exists() {
+        run(Command::new("systemctl").args(["enable", "bluetooth.service"]))?;
+    }
+
     // Snapshots only make sense on a btrfs root.
     if succeeds(Command::new("btrfs").args(["subvolume", "show", "/"])) {
         run(Command::new("snapper").args(["--no-dbus", "-c", "root", "create-config", "/"]))?;
     }
-    Ok(())
+    keys.join().map_err(|_| "pacman-key thread panicked".to_string())?
 }
 
 /// Display managers in priority order.
@@ -204,7 +220,8 @@ mod tests {
     #[test]
     fn preset_is_not_archiso() {
         assert!(!LINUX_PRESET.contains("archiso"));
-        assert!(LINUX_PRESET.contains("PRESETS=('default' 'fallback')"));
+        assert!(LINUX_PRESET.contains("PRESETS=('default')") && !LINUX_PRESET.contains("fallback"));
+        assert!(INITCPIO_COMPRESS.contains("zstd") && INITCPIO_COMPRESS.contains("-T0"));
     }
 
     #[test]

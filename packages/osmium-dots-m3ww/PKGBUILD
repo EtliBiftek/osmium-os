@@ -1,0 +1,101 @@
+# Maintainer: EtliBiftek
+# end-4's archived "m3ww" desktop (EWW widgets, Material Design 3) as an OsmiumOS dots set.
+# Applied with `osmium-dots apply m3ww`: everything under /usr/share/osmium/dots/m3ww/home/ mirrors $HOME.
+# AUR-only deps (eww gojq wlogout python-pywal python-material-color-utilities
+# python-desktop-entry-lib lexend-fonts-git) are built from packages/aur.txt into the osmium repo.
+pkgname=osmium-dots-m3ww
+_commit=2433298bddf6b1597b8e10dba67d26891664db11   # branch "archive" of end-4/dots-hyprland
+pkgver=0.1.0.r${_commit:0:7}
+pkgrel=1
+pkgdesc="end-4 m3ww (Material You EWW) desktop style for OsmiumOS"
+arch=('any')
+url="https://github.com/end-4/dots-hyprland"
+license=('GPL-3.0-or-later')
+# hyprctl comes from hyprland-rust (provides=hyprctl); never depend on hyprland.
+depends=(
+  hyprctl
+  # what the EWW scripts, hyprland.conf and keybinds run
+  socat ripgrep bc jq curl playerctl cava brightnessctl upower networkmanager bluez-utils
+  libpulse pipewire-pulse wireplumber xdg-utils glib2 gsettings-desktop-schemas
+  awww fuzzel foot fish gtklock swayidle wtype cliphist wl-clipboard
+  grim slurp swappy tesseract tesseract-data-eng hyprpicker
+  polkit-gnome gnome-keyring cosmic-files
+  python python-pillow python-requests boost-libs gtk3
+  ttf-jetbrains-mono-nerd ttf-material-symbols-variable
+  # from the osmium repo (AUR builds)
+  eww gojq wlogout python-pywal python-material-color-utilities python-desktop-entry-lib lexend-fonts-git
+)
+makedepends=(gcc boost cargo)
+provides=('light')
+conflicts=('light')
+options=('!lto')
+source=("dots-hyprland-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
+sha256sums=('457e1a62378a4a490d02bc1f524648e05d560b239f5cd014f0b16b55b1a9d216')
+
+_m() { echo "$srcdir/dots-hyprland-$_commit/m3ww"; }
+
+prepare() {
+  local m; m=$(_m)
+  cd "$m/.config"
+  rm -f hypr/hypr.conf   # config of the long-dead Hypr, never read
+
+  # --- hyprland-rust compatibility (hyprlang hyprland.conf) ---
+  # Turkish keyboard, no ibus: upstream's ibus engines (Bamboo/xkb:us) would override kb_layout.
+  sed -i 's/^\(\s*kb_layout\s*=\s*\).*/\1tr/' hypr/hyprland.conf
+  sed -i '/ibus/Id; /QT_QPA_PLATFORMTHEME/d' hypr/env.conf hypr/execs.conf hypr/keybinds.conf hypr/dirs/*.conf
+  sed -i '/scripts\/language /d' hypr/keybinds.conf hypr/dirs/keybinds_*.conf
+  # Debug binds on raw keycode 248 (close the bar on release).
+  sed -i '/^bindr\?=,248,/d' hypr/hyprland.conf hypr/dirs/hyprland_*.conf
+  # hyprland-rust wants separators in modifiers (SUPER_SHIFT); upstream Hyprland matched substrings
+  # (ControlSuperShift, CTRLAlt, SUPERALT). Split modifier runs inside the first field of bind* lines.
+  sed -i -E '/^bind[a-z]* *=/{ :a; s/^(bind[a-z]* *= *[A-Za-z_ ]*(CONTROL|CTRL|SHIFT|ALT|SUPER))(CONTROL|CTRL|SHIFT|ALT|SUPER)/\1_\3/I; ta }'     hypr/keybinds.conf hypr/dirs/keybinds_*.conf hypr/hyprland.conf hypr/dirs/hyprland_*.conf
+  # No such dispatcher in hyprland-rust: make it a no-op.
+  sed -i 's/, *fakefullscreen *,.*/, exec, true/' hypr/keybinds.conf hypr/dirs/keybinds_*.conf
+  # ~/.local/bin/lock.sh is not shipped upstream; swap in apps we ship.
+  sed -i 's|~/.local/bin/lock.sh|gtklock|; s|exec, *wezterm|exec, foot|; s|exec, *nautilus --new-window|exec, cosmic-files|; s|exec, *nautilus|exec, cosmic-files|' \
+    hypr/keybinds.conf hypr/dirs/keybinds_*.conf
+  # swww was renamed awww (daemon is awww-daemon, `init` is gone).
+  sed -i 's|swww init && swww img|awww-daemon \& sleep 1 \&\& awww img|' hypr/execs.conf
+  sed -i 's/\bswww\b/awww/g' eww/scripts/switchwall
+  # Hyprland's socket dir moved from /tmp/hypr to $XDG_RUNTIME_DIR/hypr (hyprland-rust follows that).
+  grep -rlF '/tmp/hypr/' eww | xargs -r sed -i 's|UNIX-CONNECT:/tmp/hypr/|UNIX-CONNECT:"$XDG_RUNTIME_DIR"/hypr/|'
+  # Upstream reserved bar space with `monitor = addreserved` (unimplemented here); use an
+  # exclusive layer-shell zone instead.
+  sed -i 's/^\(\s*\):stacking "fg"/&\n\1:exclusive true/' eww/eww.yuck
+}
+
+build() {
+  cd "$(_m)/.config/eww/scripts"
+  local f
+  for f in *.cpp; do
+    case $f in cavajson.cpp|mousetrack.cpp) l=-lboost_iostreams ;; *) l= ;; esac
+    g++ -O2 -o "${f%.cpp}" "$f" $l || echo "WARNING: $f failed to build, that EWW feature is disabled"
+  done
+  # Notification daemon + popup feed (GTK/zbus). Optional: skipped if it does not build.
+  cd "$(_m)/Projects/notify-receive"
+  cargo build --release --locked --target-dir "$srcdir/target" || echo "WARNING: notify-receive failed to build, no EWW notifications"
+}
+
+package() {
+  local m; m=$(_m)
+  local d="$pkgdir/usr/share/osmium/dots/m3ww"
+  install -d "$d/home/.config" "$d/home/.local/bin"
+  local x
+  for x in eww hypr foot fuzzel gtklock gtk-3.0 gtk-4.0 wlogout; do
+    cp -a "$m/.config/$x" "$d/home/.config/"
+  done
+  cp -a "$m/.local/bin/." "$d/home/.local/bin/"
+  install -d "$d/home/.config/eww/scripts/cache"   # scripts write here and do not mkdir it
+  if [ -x "$srcdir/target/release/notify-receive" ]; then
+    install -Dm755 "$srcdir/target/release/notify-receive" "$d/home/.config/eww/scripts/notify-receive"
+  fi
+  install -Dm755 "$startdir/light" "$pkgdir/usr/bin/light"
+  install -Dm644 /dev/stdin "$d/info" <<INFO
+name=m3ww
+title=m3ww (Material You EWW)
+description=end-4'ün arşivlenmiş m3ww masaüstü stili: Material Design 3 renkli EWW üst çubuğu, yan paneller ve bildirimler.
+source=$url/tree/$_commit/m3ww
+license=GPL-3.0-or-later
+INFO
+  # The archive branch carries no LICENSE file; upstream (main) is GPL-3.0, which is what we declare.
+}

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Minimal `light` (AUR) replacement on top of brightnessctl: the m3ww EWW scripts call
+# `light`, `light -A N`, `light -U N` and `light -S N`.
+case "$1" in
+  -A) exec brightnessctl -q set "$2%+" ;;
+  -U) exec brightnessctl -q set "$2%-" ;;
+  -S) exec brightnessctl -q set "$2%" ;;
+  *)  awk -v c="$(brightnessctl get)" -v m="$(brightnessctl max)" 'BEGIN { printf "%.2f\n", c * 100 / m }' ;;
+esac

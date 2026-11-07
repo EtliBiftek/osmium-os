@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs as the user after `osmium-dots apply ii|waffle`.
+# ii's scripts activate $ILLOGICAL_IMPULSE_VIRTUAL_ENV. Upstream fills it with pip downloads; we
+# build it on the Arch python packages instead, so this works offline and in seconds.
+set -e
+venv="${XDG_STATE_HOME:-$HOME/.local/state}/quickshell/.venv"
+[ -x "$venv/bin/python" ] || python -m venv --system-site-packages --prompt .venv "$venv"
+xdg-user-dirs-update 2>/dev/null || true

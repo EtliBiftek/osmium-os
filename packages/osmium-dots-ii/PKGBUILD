@@ -1,0 +1,67 @@
+# Maintainer: EtliBiftek
+# end-4's illogical-impulse desktop (Quickshell: AI sidebar, settings app, overview) and its
+# Windows-11-like panel family "waffle", as OsmiumOS dots. Applied with `osmium-dots apply ii|waffle`.
+# depends= mirrors upstream's sdata/dist-arch/illogical-impulse-* meta packages, minus Hyprland
+# (we ship hyprland-rust) and kde-material-you-colors/otf-space-grotesk (AUR-only dependency chains).
+pkgname=osmium-dots-ii
+_commit=2f2a376fdb2ad738bf55f693dd0b474b64bb0ab8
+pkgver=0.1.0.r${_commit:0:7}
+pkgrel=1
+pkgdesc="illogical-impulse and waffle desktops by end-4 for OsmiumOS"
+arch=('any')
+url="https://github.com/end-4/dots-hyprland"
+license=('GPL-3.0-or-later')
+depends=(
+  osmium-hyprland osmium-tools
+  # quickshell + Qt modules ii imports
+  quickshell qt6-5compat qt6-avif-image-plugin qt6-imageformats qt6-multimedia qt6-positioning
+  qt6-quicktimeline qt6-sensors qt6-svg qt6-tools qt6-translations qt6-virtualkeyboard qt6-wayland
+  kirigami kdialog syntax-highlighting
+  # basic
+  bc cliphist curl wget ripgrep jq xdg-user-dirs rsync go-yq
+  # widgets
+  fuzzel glib2 imagemagick hypridle hyprlock hyprpicker songrec translate-shell wlogout libqalculate
+  # fonts and themes
+  adw-gtk-theme breeze breeze-plus darkly-bin eza fish fontconfig kitty matugen starship
+  ttf-jetbrains-mono-nerd ttf-material-symbols-variable ttf-readex-pro ttf-rubik-vf ttf-twemoji
+  bibata-modern-classic-bin
+  # python: the venv uses system site-packages (offline, no pip downloads)
+  python python-pillow python-numpy python-opencv python-psutil python-cairo python-gobject
+  python-click python-loguru python-tqdm python-requests python-google-auth python-setproctitle
+  python-pywayland python-build python-wheel python-setuptools-scm
+  python-materialyoucolor python-material-color-utilities python-libsass
+  gtk4 libadwaita libsoup3 libportal-gtk4 gobject-introspection
+  # toolkit, portal, screen capture, audio, backlight
+  upower wtype ydotool
+  xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-hyprland
+  hyprshot slurp swappy tesseract tesseract-data-eng wf-recorder
+  cava pavucontrol-qt wireplumber pipewire-pulse libdbusmenu-gtk3 playerctl easyeffects
+  geoclue brightnessctl ddcutil
+  hyprsunset wl-clipboard
+  # kde bits the shell launches
+  bluedevil bluez gnome-keyring networkmanager plasma-nm polkit-kde-agent dolphin systemsettings
+)
+source=("dots-hyprland-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
+sha256sums=('8462c60ee8fbc634289a5fae0d2fbcc523b91a6a3690e6e49d273d81e9cf9c7a')
+
+package() {
+  local src="$srcdir/dots-hyprland-$_commit" d="$pkgdir/usr/share/osmium/dots"
+  install -d "$d/ii/home" "$d/waffle"
+  cp -a "$src/dots/.config" "$src/dots/.local" "$d/ii/home/"
+  # OsmiumOS defaults on top (Turkish keyboard). custom/ is upstream's place for user changes.
+  cp -a "$startdir/overlay/." "$d/ii/home/"
+  install -Dm644 "$startdir/ii.info" "$d/ii/info"
+  install -Dm755 "$startdir/post-apply" "$d/ii/post-apply"
+  install -Dm755 "$startdir/bin/osmium-installer" -t "$pkgdir/usr/bin/"
+  # waffle = ii files + panelFamily "waffle".
+  cp -a "$startdir/waffle/." "$d/waffle/"
+
+  # ii's system setup (upstream sdata/subcmd-install/2.setups.sh), done the packaged way.
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/osmium-ii.conf" <<<"i2c-dev"
+  install -Dm644 /dev/stdin "$pkgdir/usr/lib/sysusers.d/osmium-ii.conf" <<<"g i2c - -"
+  install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s /usr/lib/systemd/user/ydotool.service "$pkgdir/usr/lib/systemd/user/default.target.wants/ydotool.service"
+
+  install -Dm644 "$src/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
+  cp -a "$src/licenses/." "$pkgdir/usr/share/licenses/$pkgname/"
+}
