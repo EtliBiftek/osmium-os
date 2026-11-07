@@ -2,7 +2,7 @@
 # The user's own Rust/Smithay reimplementation of Hyprland. _commit and sha256sums are
 # bumped by .github/workflows/hyprland-rust-bump.yml once that commit's CI is green.
 pkgname=hyprland-rust
-_commit=d9010fbf0669d83718bf728af8fc0192560f2987
+_commit=f0ce131424dd0e1e3eb53120702c57e7ad3e59f2
 pkgver=0.1.0.r${_commit:0:7}
 pkgrel=1
 pkgdesc="Hyprland-compatible dynamic tiling Wayland compositor written in Rust"
@@ -17,7 +17,7 @@ provides=('hyprctl')
 # Both ship /usr/bin/hyprctl.
 conflicts=('hyprland')
 source=("$pkgname-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
-sha256sums=('ede59fa52d9a5ec160189dc9bcb89739ba3735e12a1cd933de7962847d6343c2')
+sha256sums=('06f9efcd281ab01f3f532c3434608615265676fe7552dae4ed6d7709299d42e2')
 
 build() {
   cd "$pkgname-$_commit"
