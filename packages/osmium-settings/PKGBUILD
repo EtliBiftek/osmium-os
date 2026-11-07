@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="OsmiumOS settings panel (Rust, iced)"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'osmium-tools')
 makedepends=('cargo')
 

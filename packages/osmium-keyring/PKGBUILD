@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="OsmiumOS package signing key for pacman"
 arch=('any')
 url="https://github.com/EtliBiftek/osmium-os"
-license=('MIT')
+license=('GPL-3.0-or-later')
 install=osmium-keyring.install
 
 package() {

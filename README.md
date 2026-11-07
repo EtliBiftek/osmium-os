@@ -82,6 +82,10 @@ Keep the secret key backed up offline; anyone holding it can publish packages yo
 
 ## License
 
-MIT, see `LICENSE`. Exception: the Calamares branding files in
-`packages/osmium-calamares-config/etc/calamares/branding/osmium/` (images, `show.qml`) are
-GPL-3.0-or-later from Calamares, as their `.license` files and headers say.
+Copyright (C) 2026 EtliBiftek
+
+GPL-3.0-or-later, see `LICENSE`: you can redistribute and modify OsmiumOS under the GNU
+General Public License, version 3 or any later version. The Calamares branding files in
+`packages/osmium-calamares-config/etc/calamares/branding/osmium/` (images, `show.qml`) come
+from Calamares under the same license, as their `.license` files and headers say.
+`hyprland-rust` keeps its own license (BSD-3-Clause, Smithay parts MIT).

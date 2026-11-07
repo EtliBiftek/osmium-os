@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, Windows migration, local AI assistant, installer helper"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig')
 optdepends=(
   'hyprland-rust: osmium-mode'
