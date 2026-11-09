@@ -9,7 +9,7 @@ pkgdesc="Hyprland-compatible dynamic tiling Wayland compositor written in Rust"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/hyprland-rust"
 license=('BSD-3-Clause' 'MIT')
-depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libinput' 'seatd' 'systemd-libs' 'libdrm' 'mesa' 'libglvnd')
+depends=('glibc' 'gcc-libs' 'wayland' 'libxkbcommon' 'libinput' 'seatd' 'systemd-libs' 'libdrm' 'mesa' 'libglvnd' 'xorg-xwayland')
 makedepends=('cargo')
 # makepkg's -flto turns vendored Lua (mlua) into GCC LTO objects that ld.lld cannot link.
 options=('!lto')
@@ -21,7 +21,8 @@ sha256sums=('06f9efcd281ab01f3f532c3434608615265676fe7552dae4ed6d7709299d42e2')
 
 build() {
   cd "$pkgname-$_commit"
-  cargo build --release --locked --target-dir "$srcdir/target"
+  # No --locked: upstream CI does not check Cargo.lock, and a stale one must not stop auto-bumps.
+  cargo build --release --target-dir "$srcdir/target"
 }
 
 package() {
