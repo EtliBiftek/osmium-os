@@ -460,7 +460,13 @@ fn session() -> Result {
 #[cfg(unix)]
 fn exec_compositor() -> Result {
     use std::os::unix::process::CommandExt;
-    Err(format!("hyprland-rust: {}", Command::new("hyprland-rust").exec()))
+    // hyprland-rust does not export these; portals and ii's scripts read them.
+    let err = Command::new("hyprland-rust")
+        .env("XDG_CURRENT_DESKTOP", "Hyprland")
+        .env("XDG_SESSION_TYPE", "wayland")
+        .env("XDG_SESSION_DESKTOP", "Hyprland")
+        .exec();
+    Err(format!("hyprland-rust: {err}"))
 }
 
 #[cfg(not(unix))]

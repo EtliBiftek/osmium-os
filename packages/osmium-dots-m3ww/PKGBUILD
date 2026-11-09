@@ -43,6 +43,7 @@ prepare() {
   # Not accepted by hyprland-rust (gaps 0c, 0d).
   sed -i -E '/^bindm *= *[^,]*, *[^m ][^,]*,/d' hypr/keybinds.conf hypr/dirs/keybinds_*.conf
   sed -i '/damage_tracking/d' hypr/hyprland.conf hypr/dirs/hyprland_*.conf
+  sed -i -E 's/^(\s*workspace_swipe_distance\s*=\s*[0-9]+)px/\1/' hypr/hyprland.conf hypr/dirs/hyprland_*.conf
 
   # --- hyprland-rust compatibility (hyprlang hyprland.conf) ---
   # Turkish keyboard, no ibus: upstream's ibus engines (Bamboo/xkb:us) would override kb_layout.

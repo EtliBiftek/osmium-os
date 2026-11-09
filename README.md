@@ -94,8 +94,8 @@ a newer commit's CI is green, it pins `packages/hyprland-rust/PKGBUILD` to that 
 an ISO build. Red or unfinished commits are skipped. Run it by hand from the Actions tab.
 
 CI loads every shipped dot with `hyprland-rust --check-config`; errors in third-party dots are
-warnings, so they never block the ISOs. Until hyprland-rust supports `hl.dsp.global`, ii does not
-load (see `docs/hyprland-rust-gaps.md`) and the live ISO falls back to `synthwave`.
+warnings, so they never block the ISOs. If `ii` ever fails that check at boot, the live ISO falls
+back to `synthwave`. What the compositor still lacks is in `docs/hyprland-rust-gaps.md`.
 
 To update within a minute of a push instead of an hour, add a fine-grained token with
 "Contents: read and write" on osmium-os as the secret `OSMIUM_DISPATCH_TOKEN` in hyprland-rust.
