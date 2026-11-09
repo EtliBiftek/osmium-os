@@ -115,3 +115,105 @@ jobs:
           name: osmiumos-${{ matrix.edition }}
           path: out/*.iso
           compression-level: 0
+
+  # Boots the Hyprland ISO in QEMU (UEFI), installs to a virtual disk with osmium-install
+  # (once with LUKS, once without), then boots the installed disk.
+  install-test:
+    needs: iso
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: osmiumos-hyprland
+      - name: Install QEMU
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-x86 ovmf libarchive-tools socat
+      - name: Install from the live ISO
+        run: |
+          iso=$(ls *.iso)
+          bsdtar -xf "$iso" arch/boot/x86_64 loader boot/grub 2>/dev/null || true
+          params=$(grep -rhom1 'archisobasedir=[^ ]* archisosearchuuid=[^ ]*' loader boot | head -1)
+          [ -n "$params" ] || { echo "no archiso boot parameters found in the ISO"; exit 1; }
+          cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+          qemu-img create -q -f qcow2 disk.qcow2 24G
+          # Runs in the live system as root via systemd.run=, read straight from a read-only disk.
+          cat > test.img <<'EOF'
+          exec >/dev/ttyS0 2>&1
+          for i in $(seq 50); do [ -e /dev/disk/by-id/virtio-target ] && break; sleep 0.2; done
+          disk=$(readlink -f /dev/disk/by-id/virtio-target)
+          echo "OSMIUM-DISKS $(osmium-install disks)"
+          for enc in 1 0; do
+            printf 'disk=%s\nencrypt=%s\npassphrase=ci-test-pass\nhostname=osmium-test\nusername=tester\nfullname=Test User\npassword=ci-test-pw\ntimezone=Europe/Istanbul\nlocale=tr_TR.UTF-8\nkeymap=trq\nxkblayout=tr\ndots=ii\ndots_mode=config\n' "$disk" "$enc" \
+              | osmium-install run | sed "s/^/OSMIUM-RUN-$enc /"
+            mkdir -p /tmp/r
+            if [ "$enc" = 1 ]; then
+              # The encrypted install is only checked for a root that unlocks and mounts.
+              printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest && mount -o subvol=@ /dev/mapper/citest /tmp/r \
+                && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux.img ] && echo OSMIUM-LUKS-OK
+              umount /tmp/r; cryptsetup close citest
+            fi
+          done
+          mount -o subvol=@ "${disk}2" /tmp/r || { echo OSMIUM-INSTALL-FAILED; poweroff -f; sleep 60; }
+          cat /tmp/r/etc/fstab
+          cat > /tmp/r/usr/local/bin/osmium-boot-test <<'SH'
+          #!/bin/sh
+          exec >/dev/ttyS0 2>&1
+          sleep 20
+          echo "OSMIUM-FAILED-UNITS $(systemctl --failed --no-legend --plain | tr '\n' ';')"
+          echo "OSMIUM-GREETD $(systemctl is-active greetd)"
+          journalctl -b -p err --no-pager | tail -40
+          [ -d /home/tester/.config/quickshell/ii ] && echo OSMIUM-DOTS-OK
+          [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && echo OSMIUM-BOOT-OK
+          systemctl poweroff
+          SH
+          chmod +x /tmp/r/usr/local/bin/osmium-boot-test
+          printf '[Unit]\nAfter=systemd-user-sessions.service\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/osmium-boot-test\n' \
+            > /tmp/r/etc/systemd/system/osmium-boot-test.service
+          ln -s ../osmium-boot-test.service /tmp/r/etc/systemd/system/multi-user.target.wants/
+          [ -s /tmp/r/boot/grub/grub.cfg ] && grep -q '^tester:' /tmp/r/etc/passwd && echo OSMIUM-INSTALL-OK
+          umount /tmp/r; sync
+          poweroff -f
+          sleep 60
+          EOF
+          truncate -s 1M test.img
+          cat > vm.sh <<'EOF'
+          #!/bin/sh
+          # vm.sh <log> [extra qemu args]: the VM with the target disk; serial goes to <log>.
+          log=$1; shift
+          exec timeout 20m qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -m 6G -smp 4 -display none -no-reboot \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
+            -drive if=pflash,format=raw,file=vars.fd \
+            -drive if=none,id=t,file=disk.qcow2,format=qcow2,discard=unmap -device virtio-blk-pci,drive=t,serial=target \
+            -nic user,model=virtio-net-pci -monitor unix:mon.sock,server,nowait -serial "file:$log" "$@"
+          EOF
+          chmod +x vm.sh
+          sudo ./vm.sh install.log -cdrom "$iso" \
+            -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
+            -kernel arch/boot/x86_64/vmlinuz-linux -initrd arch/boot/x86_64/initramfs-linux.img \
+            -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
+          grep -a 'OSMIUM-' install.log | cut -c1-400 || true
+          grep -aq OSMIUM-LUKS-OK install.log || { echo "::error::encrypted install failed"; tail -60 install.log; exit 1; }
+          grep -aq OSMIUM-INSTALL-OK install.log || { echo "::error::install failed"; tail -60 install.log; exit 1; }
+          echo "Install: $(grep -ao 'OSMIUM-RUN-0 {"done":true,"seconds":[0-9]*' install.log | grep -o '[0-9]*$') s (unencrypted, 4 cores)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Boot the installed system
+        run: |
+          sudo ./vm.sh boot.log &
+          for i in $(seq 120); do
+            sleep 5
+            sudo grep -aq OSMIUM-BOOT-OK boot.log 2>/dev/null && break
+            pgrep -f qemu-system >/dev/null || break
+          done
+          sudo cat boot.log | cut -c1-400 || true
+          if ! sudo grep -aq OSMIUM-BOOT-OK boot.log; then
+            echo "screendump screen.ppm" | sudo socat - unix-connect:mon.sock || true
+            sleep 2; echo "::error::the installed system did not boot to multi-user"; exit 1
+          fi
+          sudo grep -aq OSMIUM-DOTS-OK boot.log || echo "::warning::ii dots were not applied to the installed user"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: install-test-logs
+          path: |
+            install.log
+            boot.log
+            screen.ppm
