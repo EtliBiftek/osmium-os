@@ -146,12 +146,30 @@ fn postinstall() -> Result {
         run(Command::new("systemctl").args(["enable", "bluetooth.service"]))?;
     }
 
+    for (unit, on) in TUNING_UNITS {
+        if Path::new(&format!("/usr/lib/systemd/system/{unit}")).exists() {
+            succeeds(Command::new("systemctl").args([if *on { "enable" } else { "disable" }, unit]));
+        }
+    }
+
     // Snapshots only make sense on a btrfs root.
     if succeeds(Command::new("btrfs").args(["subvolume", "show", "/"])) {
         run(Command::new("snapper").args(["--no-dbus", "-c", "root", "create-config", "/"]))?;
     }
     keys.join().map_err(|_| "pacman-key thread panicked".to_string())?
 }
+
+/// (unit, enable): weekly TRIM, out-of-memory killer and mirror refresh on; the two units that
+/// only make boot wait (for NTP, for a network that a desktop does not need) off.
+const TUNING_UNITS: &[(&str, bool)] = &[
+    ("fstrim.timer", true),
+    ("systemd-oomd.service", true),
+    ("reflector.timer", true),
+    // Local model server for osmium-ai and the ii sidebar; idle until a model is pulled.
+    ("ollama.service", true),
+    ("systemd-time-wait-sync.service", false),
+    ("NetworkManager-wait-online.service", false),
+];
 
 /// Display managers in priority order.
 const DMS: &[&str] = &["sddm", "gdm", "greetd"];

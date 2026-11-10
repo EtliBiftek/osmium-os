@@ -137,22 +137,31 @@ jobs:
           cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
           qemu-img create -q -f qcow2 disk.qcow2 24G
           # Runs in the live system as root via systemd.run=, read straight from a read-only disk.
-          cat > test.img <<'EOF'
+          # The workflow prepends `enc=1` or `enc=0`.
+          cat > test.body <<'EOF'
           exec >/dev/ttyS0 2>&1
           for i in $(seq 50); do [ -e /dev/disk/by-id/virtio-target ] && break; sleep 0.2; done
           disk=$(readlink -f /dev/disk/by-id/virtio-target)
           echo "OSMIUM-DISKS $(osmium-install disks)"
-          for enc in 1 0; do
-            printf 'disk=%s\nencrypt=%s\npassphrase=ci-test-pass\nhostname=osmium-test\nusername=tester\nfullname=Test User\npassword=ci-test-pw\ntimezone=Europe/Istanbul\nlocale=tr_TR.UTF-8\nkeymap=trq\nxkblayout=tr\ndots=ii\ndots_mode=config\n' "$disk" "$enc" \
-              | osmium-install run | sed "s/^/OSMIUM-RUN-$enc /"
-            mkdir -p /tmp/r
-            if [ "$enc" = 1 ]; then
-              # The encrypted install is only checked for a root that unlocks and mounts.
-              printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest && mount -o subvol=@ /dev/mapper/citest /tmp/r \
-                && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux.img ] && echo OSMIUM-LUKS-OK
-              umount /tmp/r; cryptsetup close citest
-            fi
-          done
+          printf 'disk=%s\nencrypt=%s\npassphrase=ci-test-pass\nhostname=osmium-test\nusername=tester\nfullname=Test User\npassword=ci-test-pw\ntimezone=Europe/Istanbul\nlocale=tr_TR.UTF-8\nkeymap=trq\nxkblayout=tr\ndots=ii\ndots_mode=config\n' "$disk" "$enc" \
+            | osmium-install run | sed "s/^/OSMIUM-RUN-$enc /"
+          # Whatever still holds the target after the installer returned (should be nothing).
+          findmnt -rn -o TARGET,SOURCE | grep -E '^/mnt|cryptroot' | sed 's/^/OSMIUM-LEFT-MOUNT /'
+          [ -e /dev/mapper/cryptroot ] && echo "OSMIUM-LEFT-OPEN $(dmsetup info -c --noheadings -o name,open cryptroot)"
+          for p in /proc/[0-9]*; do
+            grep -qE "cryptroot|$disk" "$p/mountinfo" 2>/dev/null \
+              && echo "OSMIUM-HOLDER ${p#/proc/} $(cat "$p/comm") root=$(readlink "$p/root") ns=$(readlink "$p/ns/mnt")"
+          done | head -20
+          mkdir -p /tmp/r
+          if [ "$enc" = 1 ]; then
+            # The encrypted install is only checked for a root that unlocks and mounts.
+            dev=/dev/mapper/citest
+            printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest || dev=/dev/mapper/cryptroot
+            mount -o ro,subvol=@ "$dev" /tmp/r && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux.img ] \
+              && echo OSMIUM-LUKS-OK
+            poweroff -f
+            sleep 60
+          fi
           mount -o subvol=@ "${disk}2" /tmp/r || { echo OSMIUM-INSTALL-FAILED; poweroff -f; sleep 60; }
           cat /tmp/r/etc/fstab
           cat > /tmp/r/usr/local/bin/osmium-boot-test <<'SH'
@@ -175,7 +184,6 @@ jobs:
           poweroff -f
           sleep 60
           EOF
-          truncate -s 1M test.img
           cat > vm.sh <<'EOF'
           #!/bin/sh
           # vm.sh <log> [extra qemu args]: the VM with the target disk; serial goes to <log>.
@@ -187,14 +195,22 @@ jobs:
             -nic user,model=virtio-net-pci -monitor unix:mon.sock,server,nowait -serial "file:$log" "$@"
           EOF
           chmod +x vm.sh
-          sudo ./vm.sh install.log -cdrom "$iso" \
-            -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
-            -kernel arch/boot/x86_64/vmlinuz-linux -initrd arch/boot/x86_64/initramfs-linux.img \
-            -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
-          grep -a 'OSMIUM-' install.log | cut -c1-400 || true
-          grep -aq OSMIUM-LUKS-OK install.log || { echo "::error::encrypted install failed"; tail -60 install.log; exit 1; }
-          grep -aq OSMIUM-INSTALL-OK install.log || { echo "::error::install failed"; tail -60 install.log; exit 1; }
-          echo "Install: $(grep -ao 'OSMIUM-RUN-0 {"done":true,"seconds":[0-9]*' install.log | grep -o '[0-9]*$') s (unencrypted, 4 cores)" >> "$GITHUB_STEP_SUMMARY"
+          # Encrypted first, then unencrypted over it (the second run also has to wipe the first).
+          for enc in 1 0; do
+            { echo "enc=$enc"; cat test.body; } > test.img
+            truncate -s 1M test.img
+            sudo ./vm.sh install-$enc.log -cdrom "$iso" \
+              -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
+              -kernel arch/boot/x86_64/vmlinuz-linux -initrd arch/boot/x86_64/initramfs-linux.img \
+              -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
+            grep -a 'OSMIUM-' install-$enc.log | grep -av '"step":"copy"' | cut -c1-400 || true
+          done
+          grep -aq OSMIUM-LUKS-OK install-1.log || { echo "::error::encrypted install failed"; tail -60 install-1.log; exit 1; }
+          grep -aq OSMIUM-INSTALL-OK install-0.log || { echo "::error::install failed"; tail -60 install-0.log; exit 1; }
+          for enc in 1 0; do
+            echo "Install (encrypt=$enc, 4 cores): $(grep -ao 'OSMIUM-RUN-. {"done":true,"seconds":[0-9]*' install-$enc.log | grep -o '[0-9]*$') s" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if grep -aq 'OSMIUM-LEFT-' install-*.log; then echo "::warning::the installer left the target disk mounted or open"; fi
       - name: Boot the installed system
         run: |
           sudo ./vm.sh boot.log &
@@ -214,6 +230,6 @@ jobs:
         with:
           name: install-test-logs
           path: |
-            install.log
+            install-*.log
             boot.log
             screen.ppm

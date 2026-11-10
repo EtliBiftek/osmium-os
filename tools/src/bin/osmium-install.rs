@@ -629,7 +629,8 @@ fn prepare_disk(c: &Config) -> Result {
         succeeds(Command::new("umount").args(["-A", p]));
         succeeds(Command::new("swapoff").arg(p));
         if t == "crypt" {
-            succeeds(Command::new("cryptsetup").args(["close", p]));
+            // By name: a /dev/mapper path is not accepted by every cryptsetup version.
+            succeeds(Command::new("cryptsetup").args(["close", p.rsplit('/').next().unwrap_or(p)]));
         }
     }
     for (p, t) in devs.iter().rev() {
@@ -958,7 +959,14 @@ fn cleanup() {
     if !succeeds(Command::new("umount").args(["-R", MNT])) {
         succeeds(Command::new("umount").args(["-R", "-l", MNT]));
     }
-    succeeds(Command::new("cryptsetup").args(["close", MAPPER]));
+    // udev may still be probing the mapping right after the unmount.
+    for _ in 0..10 {
+        succeeds(Command::new("udevadm").args(["settle", "--timeout=5"]));
+        if !Path::new(&format!("/dev/mapper/{MAPPER}")).exists() || succeeds(Command::new("cryptsetup").args(["close", MAPPER])) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 }
 
 // ---------------------------------------------------------------- tests

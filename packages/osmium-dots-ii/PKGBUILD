@@ -44,6 +44,17 @@ depends=(
 source=("dots-hyprland-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
 sha256sums=('8462c60ee8fbc634289a5fae0d2fbcc523b91a6a3690e6e49d273d81e9cf9c7a')
 
+prepare() {
+  cd "$srcdir/dots-hyprland-$_commit/dots/.config/quickshell/ii"
+  # The AI sidebar starts on a local Ollama model when one is installed (offline, no API key).
+  # A model picked in the UI is persisted and wins from then on.
+  sed -i 's/property string model: "gemini-2.5-flash"/property string model: ""/' modules/common/Persistent.qml
+  sed -i 's/^\( *\)root.modelList = Object.keys(root.models);$/&\n\1if (!Persistent.states.ai.model \&\& dataJson.length > 0) root.setModel(root.safeModelName(dataJson[0]), false, true);/' services/Ai.qml
+  # Fail the build when upstream moves these lines.
+  grep -q 'property string model: ""' modules/common/Persistent.qml
+  grep -q 'safeModelName(dataJson\[0\])' services/Ai.qml
+}
+
 package() {
   local src="$srcdir/dots-hyprland-$_commit" d="$pkgdir/usr/share/osmium/dots"
   install -d "$d/ii/home" "$d/waffle"
