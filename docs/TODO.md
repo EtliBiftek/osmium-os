@@ -1,6 +1,6 @@
 # OsmiumOS: unfinished and not started work
 
-State at commit 71d71d6 (2026-11-10). CI is green: packages, Hyprland ISO, QEMU install (LUKS and
+State at commit 9d1bda2 (2026-11-10). CI is green: packages, Hyprland ISO, QEMU install (LUKS and
 plain) and boot of the installed system. hyprland-rust gaps are tracked separately in
 `docs/hyprland-rust-gaps.md`.
 
@@ -25,9 +25,9 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
 
 ## Half done
 
-- **m3ww socket path** (gaps item 25, OsmiumOS-side): m3ww scripts hard-code
-  `/tmp/hypr/$SIG/.socket2.sock`; patch them in `packages/osmium-dots-m3ww` prepare().
-  Its workspace bar, active window and taskbar never update until then.
+- **m3ww socket path** (gaps item 25): `prepare()` rewrites `UNIX-CONNECT:/tmp/hypr/` in the eww
+  scripts. Not verified that it covers every script in the gap list (`activewin`, `activews`,
+  `workspaces`, `taskbarloop`, `overview-wrapper`, `hyprtest`) or that the bar updates at runtime.
 - **osmium-battery**: no restore on SIGTERM (logout/shutdown leaves the screen dimmed and the
   target file); fix with an `ExecStopPost=` restore subcommand.
 - **osmium-auto**: the mode to return to lives in memory only (lost on restart); rules are
@@ -38,8 +38,6 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
   otherwise Ctrl+Alt+F<n> reaches the unlocked desktop.
 - **osmium-try**: NVIDIA proprietary device nodes are not passed into the container.
 - **osmium-hw**: NVIDIA open/legacy split by a device-id threshold, not a table.
-- **Duplicate code**: the JSON scanner and hyprctl instance lookup exist in both
-  `osmium-auto.rs` and `osmium-battery.rs`; move to `tools/src/lib.rs`.
 - **Live initramfs hooks** (`common/airootfs/etc/mkinitcpio.conf.d/archiso.conf`) are a copy of
   releng's line minus `microcode`; must follow releng when archiso changes it.
 - **Calamares**: still shipped as the manual-partitioning fallback, no longer tested since the
