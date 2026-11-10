@@ -1,6 +1,0 @@
-[org/gnome/desktop/interface]
-color-scheme='prefer-dark'
-accent-color='blue'
-
-[org/gnome/desktop/input-sources]
-sources=[('xkb', 'tr')]

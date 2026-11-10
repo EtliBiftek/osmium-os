@@ -1,6 +1,6 @@
 # OsmiumOS
 
-Arch Linux based distribution. Editions: Hyprland, KDE Plasma, GNOME.
+Arch Linux based distribution with a Hyprland desktop (running hyprland-rust).
 
 ## Build
 
@@ -62,8 +62,8 @@ region, user and desktop (built-in dots or one found on GitHub), then runs
   (no fallback image) and installs GRUB with grub-btrfs snapshots, in parallel where possible.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
-stdin (`key=value` lines). UEFI only. KDE and GNOME editions keep Calamares, which is also on
-the Hyprland ISO for manual partitioning (`sudo calamares`).
+stdin (`key=value` lines). UEFI only. For manual partitioning the ISO also has Calamares
+(`sudo calamares`).
 
 ## Tools
 

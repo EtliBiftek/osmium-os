@@ -100,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        edition: [hyprland, kde, gnome]
+        edition: [hyprland]
     container:
       image: archlinux:latest
       options: --privileged

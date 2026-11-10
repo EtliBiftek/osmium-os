@@ -1,6 +1,6 @@
 # OsmiumOS: notes for Claude
 
-Arch-based distro (Hyprland, KDE, GNOME editions), built only in GitHub Actions
+Arch-based distro with one desktop, Hyprland (never KDE or GNOME), built only in GitHub Actions
 (`.github/workflows/build.yml`): job `packages` builds `packages/*` + `packages/aur.txt` into a
 pacman repo published as the GitHub release `repo`, then job `iso` runs archiso per edition.
 User-facing text (tools, installer, messages) is Turkish; code, comments, commits are English.
