@@ -755,7 +755,8 @@ fn chmod(_: &str, _: u32) -> Result {
 
 fn copy_system() -> Result {
     let sfs = format!("{BOOTMNT}/arch/x86_64/airootfs.sfs");
-    if Path::new(&sfs).is_file() && succeeds(Command::new("unsquashfs").arg("-version")) {
+    // Not `unsquashfs -version`: it exits non-zero, which silently selected the slow rsync path.
+    if Path::new(&sfs).is_file() && Path::new("/usr/bin/unsquashfs").is_file() {
         unsquash(&sfs)?;
     } else {
         // Without squashfs-tools: copy the already-mounted live root.
@@ -942,6 +943,18 @@ fn grub_install() -> Result {
 /// Unmounts everything under /mnt and closes LUKS. Safe to call at any point.
 fn cleanup() {
     succeeds(&mut Command::new("sync"));
+    // Daemons started inside the chroot (gpg-agent from pacman-key) keep /mnt and LUKS busy.
+    let pids: Vec<String> = fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| fs::read_link(e.path().join("root")).is_ok_and(|r| r == Path::new(MNT)))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    if !pids.is_empty() {
+        succeeds(Command::new("kill").arg("-9").args(&pids));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
     if !succeeds(Command::new("umount").args(["-R", MNT])) {
         succeeds(Command::new("umount").args(["-R", "-l", MNT]));
     }

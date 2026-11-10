@@ -25,6 +25,9 @@ User-facing text (tools, installer, messages) is Turkish; code, comments, commit
   Protocol: `disks` -> JSON; `check`/`run` read `key=value` lines on stdin; `run` prints JSON lines
   `{"step","pct","msg"}`, then `{"done":true,"seconds"}` or `{"error"}`.
 
+  CI job `install-test` runs it from the Hyprland ISO in QEMU (LUKS, then plain) and boots the
+  result; on failure the serial logs are in the `install-test-logs` artifact.
+
 ## Compositor
 
 hyprland-rust (github.com/EtliBiftek/hyprland-rust, the user's own project), never upstream
