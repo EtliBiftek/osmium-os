@@ -79,11 +79,14 @@ impl Repo {
         fs::write(&exclude, EXCLUDES.join("\n") + "\n").map_err(|e| format!("{}: {e}", exclude.display()))
     }
 
+    fn has_head(&self) -> bool {
+        succeeds(self.git().args(["rev-parse", "-q", "--verify", "HEAD"]))
+    }
+
     /// Commits pending changes. Returns false when there was nothing to record.
     fn snapshot(&self, message: &str) -> Result<bool> {
         run(self.git().args(["add", "-A"]))?;
-        let has_head = succeeds(self.git().args(["rev-parse", "-q", "--verify", "HEAD"]));
-        if has_head && succeeds(self.git().args(["diff", "--cached", "--quiet"])) {
+        if self.has_head() && succeeds(self.git().args(["diff", "--cached", "--quiet"])) {
             return Ok(false);
         }
         run(self.git().args(["commit", "-q", "--allow-empty-message", "-m", message]))?;
@@ -103,6 +106,10 @@ fn dispatch(args: &[&str]) -> Result {
         ["snapshot"] => snapshot(&repo, "auto"),
         ["snapshot", msg @ ..] => snapshot(&repo, &msg.join(" ")),
         ["log", path @ ..] if path.len() <= 1 => {
+            // `git log` fails in a repository without commits (before the first timer run).
+            if !repo.has_head() {
+                return Ok(());
+            }
             let mut git = repo.git();
             git.args(["log", "-n", "50", "--date=format:%Y-%m-%d %H:%M", "--format=%h  %ad  %s", "--stat=80"]);
             if let [p] = path {
@@ -190,6 +197,15 @@ mod tests {
         repo.snapshot("s").unwrap();
         let files = output(repo.git().args(["ls-files"])).unwrap();
         assert!(files.contains("keep.conf") && !files.contains("hosts.yml"));
+    }
+
+    #[test]
+    fn log_of_an_empty_history_is_empty() {
+        let repo = temp_repo("empty");
+        assert!(!repo.has_head());
+        fs::write(repo.work_tree.join("a"), "x").unwrap();
+        repo.snapshot("s").unwrap();
+        assert!(repo.has_head());
     }
 
     #[test]

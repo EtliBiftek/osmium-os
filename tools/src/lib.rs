@@ -1,5 +1,6 @@
 //! Shared helpers for OsmiumOS tools. Std only: no crates to fetch at build time.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -99,6 +100,111 @@ pub fn append(path: impl AsRef<Path>, text: &str) -> Result {
         .map_err(|e| format!("{}: {e}", path.display()))
 }
 
+/// JSON string literal for `s`.
+pub fn json_str(s: &str) -> String {
+    use std::fmt::Write;
+    let mut o = String::with_capacity(s.len() + 2);
+    o.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => o.push_str("\\\""),
+            '\\' => o.push_str("\\\\"),
+            '\n' => o.push_str("\\n"),
+            '\r' => o.push_str("\\r"),
+            '\t' => o.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(o, "\\u{:04x}", c as u32);
+            }
+            c => o.push(c),
+        }
+    }
+    o.push('"');
+    o
+}
+
+/// Scalar fields of each object in a top-level JSON array, as text. Nested
+/// values are skipped: enough for `hyprctl monitors -j`, and there is no JSON crate.
+pub fn json_objects(text: &str) -> Vec<BTreeMap<String, String>> {
+    let mut out: Vec<BTreeMap<String, String>> = Vec::new();
+    let mut depth = 0;
+    let mut key: Option<String> = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        let value = match c {
+            '{' | '[' => {
+                depth += 1;
+                key = None;
+                if c == '{' && depth == 2 {
+                    out.push(BTreeMap::new());
+                }
+                continue;
+            }
+            '}' | ']' => {
+                depth -= 1;
+                continue;
+            }
+            '"' => {
+                let mut s = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => break,
+                        '\\' => match chars.next() {
+                            Some('n') => s.push('\n'),
+                            Some('t') => s.push('\t'),
+                            Some('u') => {
+                                let hex: String = chars.by_ref().take(4).collect();
+                                s.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+                            }
+                            Some(c) => s.push(c),
+                            None => {}
+                        },
+                        c => s.push(c),
+                    }
+                }
+                s
+            }
+            c if c.is_ascii_alphanumeric() || c == '-' => {
+                let mut s = String::from(c);
+                while let Some(n) = chars.next_if(|n| !matches!(n, ',' | '}' | ']') && !n.is_whitespace()) {
+                    s.push(n);
+                }
+                s
+            }
+            _ => continue,
+        };
+        if depth == 2 {
+            match (key.take(), out.last_mut()) {
+                (Some(k), Some(object)) => {
+                    object.insert(k, value);
+                }
+                _ => key = Some(value),
+            }
+        }
+    }
+    out
+}
+
+/// `hyprctl`, pointed at the newest compositor instance when the environment names none:
+/// user units start outside the compositor's environment.
+pub fn hyprctl() -> Command {
+    let mut cmd = Command::new("hyprctl");
+    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none()
+        && let Some(sig) = newest_hypr_instance()
+    {
+        cmd.env("HYPRLAND_INSTANCE_SIGNATURE", sig);
+    }
+    cmd
+}
+
+fn newest_hypr_instance() -> Option<std::ffi::OsString> {
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("hypr");
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())
+        .map(|e| e.file_name())
+}
+
 /// Installed by osmium-keyring; its presence means the repo is signed.
 pub const KEYRING: &str = "/usr/share/pacman/keyrings/osmium.gpg";
 
@@ -128,5 +234,24 @@ mod tests {
         assert!(s.contains("[osmium]") && s.contains("Server = https://x") && s.contains("TrustAll"));
         let s = osmium_repo_section("https://x", true);
         assert!(s.contains("SigLevel = Required DatabaseRequired") && !s.contains("TrustAll"));
+    }
+
+    #[test]
+    fn json_string_escapes() {
+        assert_eq!(json_str("a\"b\\c\n\t\u{1}ş"), "\"a\\\"b\\\\c\\n\\t\\u0001ş\"");
+        assert_eq!(json_str("\u{1}\u{1f}"), r#""\u0001\u001f""#);
+    }
+
+    #[test]
+    fn json_objects_skip_nested_values() {
+        let text = r#"[{"id": 0, "name": "eDP-1", "description": "BOE \"NE160\" \u00e7", "scale": 1.60,
+            "activeWorkspace": { "id": 1, "name": "1" }, "reserved": [0, 40], "focused": true},
+            {"name": "HDMI-A-1", "x": -1280}]"#;
+        let o = json_objects(text);
+        assert_eq!(o.len(), 2);
+        assert_eq!((o[0]["name"].as_str(), o[0]["description"].as_str()), ("eDP-1", "BOE \"NE160\" ç"));
+        assert_eq!((o[0]["scale"].as_str(), o[0]["focused"].as_str(), o[1]["x"].as_str()), ("1.60", "true", "-1280"));
+        assert!(!o[0].contains_key("activeWorkspace") && !o[0].contains_key("reserved"));
+        assert!(json_objects("").is_empty() && json_objects("]]}{[[\"a\"").is_empty());
     }
 }

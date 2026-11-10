@@ -10,8 +10,12 @@ User-facing text (tools, installer, messages) is Turkish; code, comments, commit
 - `common/`, `editions/<name>/`: archiso overlays (`airootfs/`, `packages.x86_64`,
   `profiledef.patch.sh` for file modes). The edition overlay is applied after `common/`.
 - `packages/<name>/PKGBUILD`: our packages, built with `makepkg -d` (CI installs build deps in
-  the "Install tools" step: add new makedepends there). `pkgrel` is replaced by the run number.
-  Files next to a PKGBUILD are read via `$startdir`; repo files via `$OSMIUM_SRC`.
+  the "Install tools" step: add new makedepends there). A package is rebuilt (with the run
+  number as `pkgrel`) only when its inputs change: its directory plus the top-level repo paths its
+  PKGBUILD names through `$OSMIUM_SRC`; otherwise CI reuses the published files
+  (`<name>.<hash>.built` in the release lists them). Compiled packages are also rebuilt weekly.
+  Files next to a PKGBUILD are read via `$startdir`; repo files via `$OSMIUM_SRC/<path>` (always
+  with a path, so the inputs can be tracked). No `-debug` packages are built.
 - `packages/aur.txt`: `name commit` of pinned AUR packages (name = pkgbase). Their
   `validpgpkeys` are fetched automatically. No epoch packages: GitHub assets cannot hold `:`.
 - `tools/`: std-only Rust crate, no dependencies (keep it so). One binary per tool in

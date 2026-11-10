@@ -239,10 +239,10 @@ fn preview(b: &Bundle) -> Result {
     }
     // Lua can hide a call from any substring scan (`_G["o".."s"]`), so name every Lua file.
     for e in &b.entries {
-        if let Entry::File(path, _) = e {
-            if path.ends_with(".lua") {
-                println!("  {path}: Lua kodu, tamamı çalışır; satır listesi eksik olabilir");
-            }
+        if let Entry::File(path, _) = e
+            && path.ends_with(".lua")
+        {
+            println!("  {path}: Lua kodu, tamamı çalışır; satır listesi eksik olabilir");
         }
     }
     Ok(())

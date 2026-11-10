@@ -13,7 +13,7 @@
 //! took over comes back. A manual `osmium-mode set` always wins: osmium-auto
 //! stays out until the set of matching rules changes.
 
-use osmium_tools::{Result, config_home, exit_on_err, output, run, state_home};
+use osmium_tools::{Result, config_home, exit_on_err, hyprctl, json_objects, output, run, state_home};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -257,85 +257,6 @@ fn current_mode() -> Result<Option<String>> {
     Ok(text.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()))
 }
 
-/// A user unit starts outside the compositor's environment, so hyprctl (ours
-/// and osmium-mode's) would not find the instance: point it at the newest one.
-fn hypr_env(cmd: &mut Command) -> &mut Command {
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        let dirs = std::env::var_os("XDG_RUNTIME_DIR").and_then(|d| fs::read_dir(PathBuf::from(d).join("hypr")).ok());
-        let newest = dirs
-            .into_iter()
-            .flatten()
-            .flatten()
-            .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
-        if let Some(e) = newest {
-            cmd.env("HYPRLAND_INSTANCE_SIGNATURE", e.file_name());
-        }
-    }
-    cmd
-}
-
-/// Scalar fields of each object in a top-level JSON array, as text. Nested
-/// values are skipped: enough for `hyprctl monitors -j`, and there is no JSON crate.
-fn json_objects(text: &str) -> Vec<BTreeMap<String, String>> {
-    let mut out: Vec<BTreeMap<String, String>> = Vec::new();
-    let mut depth = 0;
-    let mut key: Option<String> = None;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        let value = match c {
-            '{' | '[' => {
-                depth += 1;
-                key = None;
-                if c == '{' && depth == 2 {
-                    out.push(BTreeMap::new());
-                }
-                continue;
-            }
-            '}' | ']' => {
-                depth -= 1;
-                continue;
-            }
-            '"' => {
-                let mut s = String::new();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '"' => break,
-                        '\\' => match chars.next() {
-                            Some('n') => s.push('\n'),
-                            Some('t') => s.push('\t'),
-                            Some('u') => {
-                                let hex: String = chars.by_ref().take(4).collect();
-                                s.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
-                            }
-                            Some(c) => s.push(c),
-                            None => {}
-                        },
-                        c => s.push(c),
-                    }
-                }
-                s
-            }
-            c if c.is_ascii_alphanumeric() || c == '-' => {
-                let mut s = String::from(c);
-                while let Some(n) = chars.next_if(|n| !matches!(n, ',' | '}' | ']') && !n.is_whitespace()) {
-                    s.push(n);
-                }
-                s
-            }
-            _ => continue,
-        };
-        if depth == 2 {
-            match (key.take(), out.last_mut()) {
-                (Some(k), Some(object)) => {
-                    object.insert(k, value);
-                }
-                _ => key = Some(value),
-            }
-        }
-    }
-    out
-}
-
 fn monitor_labels(json: &str) -> Vec<String> {
     let field = |m: &BTreeMap<String, String>, k: &str| m.get(k).cloned().unwrap_or_default();
     json_objects(json).iter().map(|m| format!("{} {}", field(m, "name"), field(m, "description"))).collect()
@@ -354,17 +275,17 @@ fn gather(rules: &[Rule]) -> Facts {
     let mut f = Facts::default();
     if uses(|c| matches!(c, Cond::App(_))) {
         for entry in fs::read_dir("/proc").into_iter().flatten().flatten() {
-            if entry.file_name().to_string_lossy().starts_with(|c: char| c.is_ascii_digit()) {
-                if let Ok(bytes) = fs::read(entry.path().join("comm")) {
-                    f.apps.insert(comm(&bytes));
-                }
+            if entry.file_name().to_string_lossy().starts_with(|c: char| c.is_ascii_digit())
+                && let Ok(bytes) = fs::read(entry.path().join("comm"))
+            {
+                f.apps.insert(comm(&bytes));
             }
         }
     }
-    if uses(|c| matches!(c, Cond::Screens(_) | Cond::Screen(_))) {
-        if let Ok(json) = output(hypr_env(&mut Command::new("hyprctl")).args(["monitors", "-j"])) {
-            f.monitors = monitor_labels(&json);
-        }
+    if uses(|c| matches!(c, Cond::Screens(_) | Cond::Screen(_)))
+        && let Ok(json) = output(hyprctl().args(["monitors", "-j"]))
+    {
+        f.monitors = monitor_labels(&json);
     }
     if uses(|c| matches!(c, Cond::Wifi(_))) {
         // LC_ALL=C: "yes" is translated otherwise. --rescan no: asking every 5 s must not scan.
@@ -435,7 +356,10 @@ fn tick(st: &mut State) -> Result {
     if let Some(mode) = step(st, lines, winner, current_mode()?.as_deref()) {
         // A failed switch leaves the mode file unchanged, which the next tick
         // reads as a manual override: no retry storm.
-        run(hypr_env(&mut Command::new("osmium-mode")).args(["set", &mode]))?;
+        // osmium-mode talks to the compositor too: hand it the instance we found.
+        let mut set = Command::new("osmium-mode");
+        set.envs(hyprctl().get_envs().filter_map(|(k, v)| Some((k, v?)))).args(["set", &mode]);
+        run(&mut set)?;
     }
     Ok(())
 }
@@ -450,7 +374,7 @@ fn daemon() -> Result {
     // The unit starts with the user manager, before the greetd session execs the
     // compositor. A switch tried then fails, and a failed switch reads as a
     // manual override: the rule would stay unapplied for the whole session.
-    while !output(hypr_env(&mut Command::new("hyprctl")).args(["monitors", "-j"])).is_ok_and(|t| is_monitor_list(&t)) {
+    while !output(hyprctl().args(["monitors", "-j"])).is_ok_and(|t| is_monitor_list(&t)) {
         std::thread::sleep(Duration::from_secs(5));
     }
     let mut st = State::default();
@@ -671,17 +595,8 @@ mod tests {
     }]"#;
 
     #[test]
-    fn scans_monitor_json() {
-        let objects = json_objects(MONITORS);
-        assert_eq!(objects.len(), 2);
-        let m = &objects[0];
-        assert_eq!(m["name"], "eDP-1", "nested workspace name must not win");
-        assert_eq!(m["description"], "BOE \"NE160\" 0x0A1D");
-        assert_eq!((m["width"].as_str(), m["refreshRate"].as_str(), m["x"].as_str()), ("2560", "165.00400", "-1280"));
-        assert_eq!((m["scale"].as_str(), m["focused"].as_str()), ("1.60", "true"));
-        assert!(!m.contains_key("activeWorkspace") && !m.contains_key("reserved") && !m.contains_key("availableModes"));
+    fn labels_monitors() {
         assert_eq!(monitor_labels(MONITORS), ["eDP-1 BOE \"NE160\" 0x0A1D", "HDMI-A-1 Dell Inc. DELL U2720Q ç"]);
-        assert!(json_objects("").is_empty() && json_objects("[]").is_empty() && json_objects("]]}{[[\"a\"").is_empty());
     }
 
     #[test]

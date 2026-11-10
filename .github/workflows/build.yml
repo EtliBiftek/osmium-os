@@ -77,22 +77,41 @@ jobs:
           SH
           runuser -u checker -- sh /tmp/modes.sh || { cat /tmp/hr.log; exit 1; }
       - name: Publish pacman repo
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view repo -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create repo -R "$GITHUB_REPOSITORY" --title "Package repo" --notes "pacman repo for OsmiumOS" --latest=false
-          gh release upload repo repo/* -R "$GITHUB_REPOSITORY" --clobber
+          # Release downloads lag a few seconds behind uploads.
+          live() {
+            local f url
+            for f in "$@"; do
+              url="https://github.com/$GITHUB_REPOSITORY/releases/download/repo/$(basename "$f")"
+              for _ in $(seq 30); do curl -fsIL -o /dev/null "$url" && continue 2; sleep 5; done
+              echo "::error::$url is not downloadable"; return 1
+            done
+          }
+          # Only what this run built (work/fresh.txt): packages reused from the release are
+          # already there, and re-uploading one takes it offline for a moment.
+          mapfile -t fresh < work/fresh.txt
+          pkgs=(); db=()
+          for f in "${fresh[@]}"; do
+            case $f in osmium.*) db+=("repo/$f") ;; *) pkgs+=("repo/$f") ;; esac
+          done
+          echo "uploading ${#pkgs[@]} package files, ${#db[@]} database files"
+          # Packages first and the database last: it must never name a file that is not there yet.
+          if [ ${#pkgs[@]} -gt 0 ]; then
+            gh release upload repo "${pkgs[@]}" -R "$GITHUB_REPOSITORY" --clobber
+            live "${pkgs[@]}"
+          fi
+          gh release upload repo "${db[@]}" -R "$GITHUB_REPOSITORY" --clobber
           # Drop package files no longer in the repo db.
           for a in $(gh release view repo -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name'); do
             [ -e "repo/$a" ] || gh release delete-asset repo "$a" -R "$GITHUB_REPOSITORY" -y
           done
-          # Release downloads lag a few seconds behind uploads; the ISO job needs them live.
-          for f in repo/*; do
-            url="https://github.com/$GITHUB_REPOSITORY/releases/download/repo/$(basename "$f")"
-            for i in $(seq 30); do curl -fsIL -o /dev/null "$url" && break; sleep 5; done
-            curl -fsIL -o /dev/null "$url"
-          done
+          # The ISO job needs the new database live.
+          live "${db[@]}"
 
   iso:
     needs: packages
@@ -159,6 +178,8 @@ jobs:
             printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest || dev=/dev/mapper/cryptroot
             mount -o ro,subvol=@ "$dev" /tmp/r && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux.img ] \
               && echo OSMIUM-LUKS-OK
+            # GRUB reads the passphrase with a US keymap: slot 0 holds what the same keys type there (tr).
+            printf "c'=test=pass" | cryptsetup open --test-passphrase --key-slot 0 --key-file=- "${disk}2" && echo OSMIUM-GRUBKEY-OK
             poweroff -f
             sleep 60
           fi
@@ -213,6 +234,7 @@ jobs:
             grep -a 'OSMIUM-' install-$enc.log | grep -av '"step":"copy"' | cut -c1-400 || true
           done
           grep -aq OSMIUM-LUKS-OK install-1.log || { echo "::error::encrypted install failed"; tail -60 install-1.log; exit 1; }
+          grep -aq OSMIUM-GRUBKEY-OK install-1.log || { echo "::error::no LUKS key slot for the passphrase as GRUB reads it"; exit 1; }
           grep -aq OSMIUM-INSTALL-OK install-0.log || { echo "::error::install failed"; tail -60 install-0.log; exit 1; }
           for enc in 1 0; do
             echo "Install (encrypt=$enc, 4 cores): $(grep -ao 'OSMIUM-RUN-. {"done":true,"seconds":[0-9]*' install-$enc.log | grep -o '[0-9]*$') s" >> "$GITHUB_STEP_SUMMARY"

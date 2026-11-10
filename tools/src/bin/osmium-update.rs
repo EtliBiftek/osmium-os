@@ -190,9 +190,14 @@ fn issues_for(pending: &[Pending]) -> Vec<(String, u32)> {
 }
 
 fn gather() -> Result<Report> {
-    let pending = pending_updates()?;
+    // checkupdates syncs a copy of the databases; the news feed downloads meanwhile.
+    let (pending, feed) = std::thread::scope(|s| {
+        let feed = s.spawn(|| curl(NEWS_FEED));
+        (pending_updates(), feed.join().unwrap_or_else(|_| Err("thread panicked".into())))
+    });
+    let pending = pending?;
     let since = read_time("last-update")?.unwrap_or(now().saturating_sub(DEFAULT_NEWS_DAYS * DAY));
-    let news = match curl(NEWS_FEED) {
+    let news = match feed {
         Ok(xml) => parse_news(&xml)
             .into_iter()
             .filter(|n| n.date > since)

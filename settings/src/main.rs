@@ -74,14 +74,26 @@ impl Appearance {
         a.rounding = num("rounding").unwrap_or(a.rounding);
         a.blur = flag("blur").unwrap_or(a.blur);
         a.animations = flag("animations").unwrap_or(a.animations);
-        if let Some(i) = src.find("kb_layout = \"") {
-            let rest = &src[i + 13..];
-            if let Some(end) = rest.find('"') {
-                a.kb_layout = rest[..end].to_string();
-            }
-        }
+        a.kb_layout = kb_layout_in(src).unwrap_or(a.kb_layout);
         a
     }
+
+    /// What the panel shows before it has saved anything: the defaults, with the keyboard
+    /// layout hyprland.lua already uses (the installer writes the chosen one there), so the
+    /// first "save" does not switch the keyboard back to Turkish.
+    fn initial(hyprland_lua: &str) -> Self {
+        let mut a = Appearance::default();
+        a.kb_layout = kb_layout_in(hyprland_lua).unwrap_or(a.kb_layout);
+        a
+    }
+}
+
+/// The first `kb_layout = "..."` outside a Lua comment.
+fn kb_layout_in(src: &str) -> Option<String> {
+    src.lines().filter(|l| !l.trim_start().starts_with("--")).find_map(|l| {
+        let rest = l[l.find("kb_layout")? + 9..].trim_start().strip_prefix('=')?.trim_start().strip_prefix('"')?;
+        Some(rest[..rest.find('"')?].to_string())
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -170,7 +182,10 @@ fn parse_history(out: &str) -> Vec<Snapshot> {
 
 impl App {
     fn new() -> (Self, Task<Msg>) {
-        let look = std::fs::read_to_string(settings_file()).map(|s| Appearance::from_lua(&s)).unwrap_or_default();
+        let look = match std::fs::read_to_string(settings_file()) {
+            Ok(s) => Appearance::from_lua(&s),
+            Err(_) => Appearance::initial(&std::fs::read_to_string(config_dir().join("hypr/hyprland.lua")).unwrap_or_default()),
+        };
         let mut app = App {
             tab: Tab::Appearance,
             look,
@@ -344,6 +359,14 @@ mod tests {
     fn appearance_roundtrip() {
         let a = Appearance { gaps_in: 0, gaps_out: 25, rounding: 3, blur: false, animations: true, kb_layout: "tr,us".into() };
         assert_eq!(Appearance::from_lua(&a.to_lua()), a);
+    }
+
+    #[test]
+    fn first_run_keeps_the_installed_keyboard_layout() {
+        let lua = "-- input = { kb_layout = \"xx\" }\nhl.config({\n    input = {\n        kb_layout    = \"us\",\n    },\n})\n";
+        assert_eq!(Appearance::initial(lua), Appearance { kb_layout: "us".into(), ..Default::default() });
+        assert_eq!(Appearance::initial(""), Appearance::default());
+        assert_eq!(Appearance::initial("kb_layout = layout\n"), Appearance::default());
     }
 
     #[test]

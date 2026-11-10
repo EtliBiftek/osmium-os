@@ -15,7 +15,7 @@
 //! your user (and sudo) can. Without a terminal (the installer) the script is postponed to the
 //! first login, where a terminal asks you.
 
-use osmium_tools::{Result, exit_on_err, output, state_home, succeeds};
+use osmium_tools::{Result, exit_on_err, json_str as js, output, state_home, succeeds};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, IsTerminal, Write};
@@ -288,6 +288,9 @@ fn apply_config_dir(repo: &str, dir: &Path) -> Result {
     if let Some(b) = backup(&home, &names)? {
         println!("Eski ayarlar yedeklendi: {}", b.display());
     }
+    // A fresh account (the installer) has no ~/.config yet, and cp does not create parents.
+    let config = home.join(".config");
+    fs::create_dir_all(&config).map_err(|e| format!("{}: {e}", config.display()))?;
     for n in &names {
         let (from, to) = (root.join(n), home.join(".config").join(n));
         osmium_tools::run(Command::new("cp").arg("-a").arg("--no-preserve=ownership").arg(&from).arg(&to))?;
@@ -380,12 +383,11 @@ fn report_missing(hypr: &Path) -> Result {
     // pacman -F needs the files database (sudo pacman -Fy once); without it we only name programs.
     let mut pkgs: Vec<String> = Vec::new();
     for m in &missing {
-        if let Ok(o) = output(Command::new("pacman").args(["-Fq", &format!("/usr/bin/{m}")])) {
-            if let Some(p) = o.lines().next().and_then(|l| l.rsplit('/').next()) {
-                if !pkgs.iter().any(|x| x == p) {
-                    pkgs.push(p.to_string());
-                }
-            }
+        if let Ok(o) = output(Command::new("pacman").args(["-Fq", &format!("/usr/bin/{m}")]))
+            && let Some(p) = o.lines().next().and_then(|l| l.rsplit('/').next())
+            && !pkgs.iter().any(|x| x == p)
+        {
+            pkgs.push(p.to_string());
         }
     }
     println!("Bu ayarların başlattığı ama kurulu olmayan programlar: {}", missing.join(", "));
@@ -444,10 +446,10 @@ fn run_script(repo: &str, dir: &Path) -> Result {
 /// greetd / tty login: first login gets the default dots, then hyprland-rust takes over.
 fn session() -> Result {
     let home = home()?;
-    if current().is_none() && !home.join(".config/hypr").exists() {
-        if let Err(e) = apply_builtin(Path::new(DOTS_DIR), DEFAULT, &home) {
-            eprintln!("osmium-dots: {e}");
-        }
+    if current().is_none() && !home.join(".config/hypr").exists()
+        && let Err(e) = apply_builtin(Path::new(DOTS_DIR), DEFAULT, &home)
+    {
+        eprintln!("osmium-dots: {e}");
     }
     if state_file("dots-pending")?.is_file() {
         // Detached helper: waits for the compositor, then opens a terminal to ask.
@@ -559,25 +561,6 @@ fn parse_search(body: &str) -> Result<Vec<Repo>> {
             })
         })
         .collect())
-}
-
-/// JSON string literal.
-fn js(s: &str) -> String {
-    let mut o = String::with_capacity(s.len() + 2);
-    o.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 => o.push_str(&format!("\\u{:04x}", c as u32)),
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
 }
 
 /// Just enough JSON for GitHub's search reply.
@@ -724,7 +707,8 @@ impl Parser<'_> {
                             let mut cp = u32::from_str_radix(hex, 16).map_err(|e| e.to_string())?;
                             // Surrogate pair (emoji in descriptions).
                             if (0xD800..0xDC00).contains(&cp) && self.s[self.i..].starts_with(b"\\u") {
-                                let lo = std::str::from_utf8(&self.s[self.i + 2..self.i + 6]).map_err(|e| e.to_string())?;
+                                let lo = self.s.get(self.i + 2..self.i + 6).ok_or("JSON: bad \\u")?;
+                                let lo = std::str::from_utf8(lo).map_err(|e| e.to_string())?;
                                 let lo = u32::from_str_radix(lo, 16).map_err(|e| e.to_string())?;
                                 self.i += 6;
                                 cp = 0x10000 + ((cp - 0xD800) << 10) + (lo.wrapping_sub(0xDC00) & 0x3FF);
@@ -822,6 +806,8 @@ mod tests {
         assert_eq!(v.get("a"), Some(&Json::Arr(vec![Json::Num(1.0), Json::Num(-25.0), Json::Bool(true), Json::Null])));
         assert!(Json::parse("{\"a\":1} x").is_err());
         assert!(Json::parse("[1,").is_err());
+        // A reply cut inside a surrogate pair is an error, not a panic.
+        assert!(Json::parse(r#"["\ud83d\ude"#).is_err());
     }
 
     #[test]
