@@ -1,0 +1,7 @@
+// The guest of `osmium-guest` sits on the active seat, so polkit's allow_active defaults would let
+// it mount the owner's disks (udisks2), edit network connections and more. Deny it everything.
+polkit.addRule(function (action, subject) {
+    if (subject.user == "misafir") {
+        return polkit.Result.NO;
+    }
+});

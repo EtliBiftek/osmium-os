@@ -1,22 +1,25 @@
 # Maintainer: EtliBiftek
 # Built from this repo's tools/ crate; osmium-build sets OSMIUM_SRC to the repo root.
 pkgname=osmium-tools
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
-pkgdesc="OsmiumOS system tools (Rust): modes, config history, update risk check, theme sharing, Windows migration, local AI assistant, installer backend"
+pkgdesc="OsmiumOS system tools (Rust): modes, config history, update rehearsal, health check, snapshots diff, sandboxed try, guest session, battery budget, installer backend"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('GPL-3.0-or-later')
-depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig')
+depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig'
+         'systemd' 'btrfs-progs' 'snapper' 'procps-ng' 'shadow' 'kbd')
 optdepends=(
-  'hyprland-rust: osmium-mode'
+  'hyprland-rust: osmium-mode, osmium-auto, osmium-battery'
   'anyrun: osmium-mode menu'
   'swaync: osmium-mode notifications'
-  'power-profiles-daemon: osmium-mode power profiles'
-  'libnotify: osmium-update desktop notifications'
+  'power-profiles-daemon: osmium-mode and osmium-battery power profiles'
+  'python-gobject: powerprofilesctl'
+  'brightnessctl: osmium-battery'
+  'libnotify: osmium-update and osmium-battery notifications'
   'github-cli: osmium-share publish'
   'ollama: osmium-ai local model backend'
-  'networkmanager: osmium-migrate wifi'
+  'networkmanager: osmium-migrate wifi, osmium-auto wifi rules'
 )
 makedepends=('cargo')
 
@@ -29,7 +32,12 @@ build() {
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   local data="$OSMIUM_SRC/tools/data"
-  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,install,dots,mode,history,update,share,ai,migrate,welcome,hw} -t "$pkgdir/usr/bin/"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,install,dots,mode,history,update,share,ai,migrate,welcome,hw,doctor,changes,try,guest,auto,battery,apply} -t "$pkgdir/usr/bin/"
+  install -Dm644 "$data"/systemd-system/*.service -t "$pkgdir/usr/lib/systemd/system/"
+  install -Dm644 "$data"/polkit/50-osmium-guest.rules -t "$pkgdir/usr/share/polkit-1/rules.d/"
+  # Removes a guest account a crash left behind, before anyone can log in.
+  install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"
+  ln -s ../osmium-guest-cleanup.service "$pkgdir/usr/lib/systemd/system/multi-user.target.wants/"
   install -Dm644 "$data"/modes/*.mode -t "$pkgdir/usr/share/osmium/modes/"
   install -Dm644 "$data"/ai.conf -t "$pkgdir/usr/share/osmium/"
   install -Dm644 "$data"/systemd/*.{service,timer} -t "$pkgdir/usr/lib/systemd/user/"
@@ -39,4 +47,7 @@ package() {
   for t in osmium-history osmium-update; do
     ln -s ../$t.timer "$pkgdir/usr/lib/systemd/user/timers.target.wants/$t.timer"
   done
+  # Idles until ~/.config/osmium/auto.rules exists (`osmium-auto init`).
+  install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
+  ln -s ../osmium-auto.service "$pkgdir/usr/lib/systemd/user/default.target.wants/"
 }

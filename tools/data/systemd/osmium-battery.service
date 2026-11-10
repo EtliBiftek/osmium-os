@@ -1,0 +1,7 @@
+[Unit]
+Description=OsmiumOS battery budget controller (started by: osmium-battery hedef)
+
+[Service]
+ExecStart=/usr/bin/osmium-battery run
+Restart=on-failure
+RestartSec=30

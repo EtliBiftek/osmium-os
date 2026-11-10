@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove what a crashed OsmiumOS guest session left behind
+# Before anyone can log in, so a stale guest account is never usable.
+Before=systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/osmium-guest cleanup
+
+[Install]
+WantedBy=multi-user.target

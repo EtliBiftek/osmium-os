@@ -2,12 +2,21 @@
 //! packages about to be upgraded, and holds a risky update for a few days.
 //!
 //!   osmium-update check          report only (exit 2 when the update is held)
-//!   osmium-update [run] [--force] check, then `sudo pacman -Syu` unless held
+//!   osmium-update [run] [--force] [--provasiz]
+//!                                check, rehearse, then upgrade unless held or regressed
+//!   osmium-update prova          rehearse only (exit 3 on regressions)
 //!   osmium-update notify         check and send a desktop notification (user timer)
 //!
 //! Arch does not support partial upgrades, so a risky update is delayed as a
 //! whole, never split. A hold expires after HOLD_DAYS so security fixes are not
 //! blocked forever. Snapshots before/after the upgrade come from snap-pac.
+//!
+//! Rehearsal: the upgrade first runs in a writable btrfs snapshot of the root
+//! (/.osmium-prova), which is then booted headless in systemd-nspawn. Units
+//! that fail there but not on the live system block the real upgrade (exit 3)
+//! unless --force. The real upgrade is `pacman -Su` with the snapshot's sync
+//! databases, so it installs exactly the rehearsed versions. `--provasiz`
+//! skips all of this and runs `sudo pacman -Syu` as before.
 
 use osmium_tools::{Result, exit_on_err, output, run, state_home, succeeds};
 use std::fs;
@@ -59,12 +68,18 @@ impl Report {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let res = match args[..] {
+    let (flags, words): (Vec<&str>, Vec<&str>) = args.iter().partition(|a| a.starts_with('-'));
+    let (force, rehearse) = (flags.contains(&"--force"), !flags.contains(&"--provasiz"));
+    let usage = || Err("usage: osmium-update [check | run [--force] [--provasiz] | prova | notify]".into());
+    let blocked = |r: Result<bool>| r.map(|b| if b { std::process::exit(3) });
+    let res = match words[..] {
+        _ if flags.iter().any(|f| !matches!(*f, "--force" | "--provasiz")) => usage(),
+        [] | ["run"] => blocked(upgrade(force, rehearse)),
+        _ if !flags.is_empty() => usage(),
         ["check"] => check().map(|held| if held { std::process::exit(2) }),
-        [] | ["run"] => upgrade(false),
-        ["--force"] | ["run", "--force"] => upgrade(true),
+        ["prova"] => blocked(prova()),
         ["notify"] => notify(),
-        _ => Err("usage: osmium-update [check | run [--force] | notify]".into()),
+        _ => usage(),
     };
     exit_on_err("osmium-update", res);
 }
@@ -340,24 +355,238 @@ fn confirm(question: &str) -> bool {
     std::io::stdin().lock().read_line(&mut line).is_ok() && matches!(line.trim(), "e" | "E" | "evet" | "y")
 }
 
-fn upgrade(force: bool) -> Result {
+/// Returns whether the rehearsal blocked the upgrade.
+fn upgrade(force: bool, rehearse: bool) -> Result<bool> {
     let r = gather()?;
     print_report(&r);
     if r.pending.is_empty() {
         println!("Sistem güncel.");
-        return Ok(());
+        return Ok(false);
     }
     if decide(&r)? && !force {
         println!("\nRiskli güncelleme bekletildi. Ayrıntılar yukarıda; zorlamak için: osmium-update --force");
-        return Ok(());
+        return Ok(false);
     }
     if r.news.iter().any(|(_, hit)| *hit) && !confirm("\n'!' işaretli haberler bekleyen paketlerden bahsediyor. Okudunuz mu, devam edilsin mi?") {
-        return Ok(());
+        return Ok(false);
     }
-    run(Command::new("sudo").args(["pacman", "-Syu"]))?;
+    if rehearse {
+        let findings = rehearsal(kernel_upgraded(&r.pending), &|f| f.is_empty() || force)?;
+        println!("\n{}", verdict(&findings, force));
+        if !findings.is_empty() && !force {
+            return Ok(true);
+        }
+        // -Su, not -Syu: the sync databases are the rehearsed ones.
+        run(Command::new("sudo").args(["pacman", "-Su", "--noconfirm"]))?;
+    } else {
+        run(Command::new("sudo").args(["pacman", "-Syu"]))?;
+    }
     write_time("last-update", now())?;
     let _ = fs::remove_file(state("update-hold")?);
+    Ok(false)
+}
+
+fn prova() -> Result<bool> {
+    let pending = pending_updates()?;
+    if pending.is_empty() {
+        println!("Sistem güncel, prova edilecek güncelleme yok.");
+        return Ok(false);
+    }
+    let findings = rehearsal(kernel_upgraded(&pending), &|_| false)?;
+    println!("\n{}", verdict(&findings, false));
+    Ok(!findings.is_empty())
+}
+
+// ---------- rehearsal ----------
+
+const PROVA_ROOT: &str = "/.osmium-prova";
+const PROVA_UNIT: &str = "osmium-prova.service";
+const BOOT_TIMEOUT_SECS: u64 = 180;
+/// Units that cannot work in a container; their failure there says nothing.
+const CONTAINER_ONLY_FAILURES: &[&str] = &[
+    "systemd-modules-load",
+    "sys-kernel-",
+    "dev-hugepages.mount",
+    "systemd-udev",
+    "NetworkManager-wait-online",
+    "greetd",
+    // The copy holds no /.snapshots subvolume and grub-probe finds no real disk.
+    "grub-btrfsd",
+    "snapper-",
+];
+
+fn ignored(unit: &str) -> bool {
+    CONTAINER_ONLY_FAILURES.iter().any(|p| unit.starts_with(p)) || unit.ends_with(".device") || unit.ends_with(".swap")
+}
+
+/// Unit names from `systemctl --failed --no-legend --plain`.
+fn parse_failed(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|l| l.split_whitespace().find(|w| w.contains('.')))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Units that fail in the rehearsal but not on the live system.
+fn regressions(rehearsed: &[String], live: &[String]) -> Vec<String> {
+    let mut r: Vec<String> = rehearsed.iter().filter(|u| !ignored(u) && !live.contains(u)).cloned().collect();
+    r.sort();
+    r.dedup();
+    r
+}
+
+/// `is-system-running` reply: `Some(booted)` once the boot has settled.
+fn boot_settled(state: &str) -> Option<bool> {
+    match state.trim() {
+        "running" | "degraded" => Some(true),
+        "maintenance" | "stopping" => Some(false),
+        _ => None, // initializing, starting, or not reachable yet
+    }
+}
+
+fn kernel_upgraded(pending: &[Pending]) -> bool {
+    pending.iter().any(|p| matches!(p.name.as_str(), "linux" | "linux-lts" | "linux-zen" | "linux-hardened"))
+}
+
+/// `find -printf '%s %f\n'` of /boot: a kernel and an initramfs, none empty.
+fn kernel_files_ok(listing: &str) -> bool {
+    let files: Vec<(&str, &str)> = listing.lines().filter_map(|l| l.split_once(' ')).collect();
+    ["vmlinuz-", "initramfs-"].iter().all(|prefix| {
+        let mut sizes = files.iter().filter(|(_, name)| name.starts_with(prefix)).map(|(size, _)| *size).peekable();
+        sizes.peek().is_some() && sizes.all(|s| s != "0")
+    })
+}
+
+fn findings(booted: bool, regressions: &[String], deps_ok: bool, kernel_ok: bool) -> Vec<String> {
+    let mut f = Vec::new();
+    if !booted {
+        f.push("güncellenmiş sistem provada açılmadı".to_string());
+    }
+    f.extend(regressions.iter().map(|u| format!("{u} yalnızca güncellemeden sonra başarısız oluyor")));
+    if !deps_ok {
+        f.push("paket bağımlılıkları tutarsız (pacman -Dk)".to_string());
+    }
+    if !kernel_ok {
+        f.push("çekirdek güncellendi ama /boot içinde vmlinuz veya initramfs eksik ya da boş".to_string());
+    }
+    f
+}
+
+fn verdict(findings: &[String], force: bool) -> String {
+    const LIMITS: &str = "Not: bu bir prova kapısıdır; donanım sürücüleri ve çekirdeğin kendisi kapsayıcıda denenmez.";
+    if findings.is_empty() {
+        return format!("Prova temiz: güncellenmiş sistem açıldı, yeni başarısız servis yok.\n{LIMITS}");
+    }
+    let list: String = findings.iter().map(|f| format!("  ! {f}\n")).collect();
+    let end = if force {
+        "--force verildi, yine de güncelleniyor."
+    } else {
+        "Güncelleme YAPILMADI. Yine de güncellemek için: osmium-update --force"
+    };
+    format!("Prova sorun buldu:\n{list}{LIMITS}\n{end}")
+}
+
+fn sudo(args: &[&str]) -> Vec<String> {
+    std::iter::once("sudo").chain(args.iter().copied()).map(str::to_string).collect()
+}
+
+/// A one-off command in the snapshot (not booted). --as-pid2: pacman and its
+/// hooks are not written to be PID 1 (zombie reaping, signals).
+fn nspawn_argv(args: &[&str]) -> Vec<String> {
+    let mut v = sudo(&["systemd-nspawn", "-q", "--register=no", "--as-pid2", "-D", PROVA_ROOT]);
+    v.extend(args.iter().map(|s| s.to_string()));
+    v
+}
+
+fn upgrade_argv() -> Vec<String> {
+    // The shared cache means packages are downloaded once. snap-pac would try to
+    // snapshot from inside the container and abort the transaction.
+    nspawn_argv(&["--bind=/var/cache/pacman/pkg", "--setenv=SNAP_PAC_SKIP=y", "pacman", "-Syu", "--noconfirm"])
+}
+
+/// Boots the snapshot as a transient unit; registered so `systemctl -M` works.
+fn boot_argv() -> Vec<String> {
+    sudo(&[
+        "systemd-run", "--quiet", "--collect", "--unit", PROVA_UNIT, "-p", "KillMode=mixed", "-p", "Delegate=yes",
+        "systemd-nspawn", "-q", "--register=yes", "--keep-unit", "--machine=osmium-prova", "-D", PROVA_ROOT,
+        "--boot", "--private-network", "--console=passive", "--link-journal=no",
+    ])
+}
+
+fn machine_argv(args: &[&str]) -> Vec<String> {
+    let mut v = sudo(&["systemctl", "-M", "osmium-prova"]);
+    v.extend(args.iter().map(|s| s.to_string()));
+    v
+}
+
+fn cmd(argv: &[String]) -> Command {
+    let mut c = Command::new(&argv[0]);
+    c.args(&argv[1..]);
+    c
+}
+
+/// Stdout whatever the exit status: `is-system-running` and `--failed` exit non-zero on bad news.
+fn stdout_of(argv: &[String]) -> String {
+    cmd(argv)
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Stops the rehearsal container and deletes its snapshot; both may be absent.
+fn discard() -> Result {
+    succeeds(&mut cmd(&sudo(&["systemctl", "stop", PROVA_UNIT])));
+    if succeeds(&mut cmd(&sudo(&["btrfs", "subvolume", "show", PROVA_ROOT]))) {
+        run(&mut cmd(&sudo(&["btrfs", "subvolume", "delete", PROVA_ROOT])))?;
+    }
     Ok(())
+}
+
+/// Runs the rehearsal and returns what it found. When `adopt` accepts the
+/// findings, the snapshot's sync databases replace the live ones.
+fn rehearsal(kernel: bool, adopt: &dyn Fn(&[String]) -> bool) -> Result<Vec<String>> {
+    println!("\nProva: güncelleme önce sistemin bir kopyasında denenecek (yönetici parolası istenebilir).");
+    discard()?; // left over from an interrupted run
+    run(&mut cmd(&sudo(&["btrfs", "subvolume", "snapshot", "/", PROVA_ROOT])))
+        .map_err(|e| format!("prova için anlık görüntü alınamadı ({e}). Provasız güncelleme: osmium-update --provasiz"))?;
+    let res = rehearse(kernel).and_then(|found| {
+        if adopt(&found) {
+            let sync = format!("{PROVA_ROOT}/var/lib/pacman/sync/.");
+            run(&mut cmd(&sudo(&["cp", "-a", &sync, "/var/lib/pacman/sync/"])))?;
+        }
+        Ok(found)
+    });
+    if let Err(e) = discard() {
+        eprintln!("osmium-update: uyarı: prova kopyası silinemedi: {e}");
+    }
+    res
+}
+
+fn rehearse(kernel: bool) -> Result<Vec<String>> {
+    run(&mut cmd(&upgrade_argv())).map_err(|e| {
+        format!("güncelleme provada başarısız oldu: {e}\nProvasız güncelleme: osmium-update --provasiz")
+    })?;
+    let deps_ok = succeeds(&mut cmd(&nspawn_argv(&["pacman", "-Dk"])));
+    let boot = format!("{PROVA_ROOT}/boot");
+    let kernel_ok = !kernel
+        || kernel_files_ok(&stdout_of(&sudo(&["find", &boot, "-maxdepth", "1", "-type", "f", "-printf", "%s %f\\n"])));
+    // The copy must not wait for the real disks; only this throwaway fstab is emptied.
+    run(&mut cmd(&sudo(&["truncate", "-s", "0", &format!("{PROVA_ROOT}/etc/fstab")])))?;
+
+    println!("Prova: güncellenmiş sistem kapsayıcıda açılıyor...");
+    run(&mut cmd(&boot_argv()))?;
+    let mut booted = false;
+    for _ in 0..BOOT_TIMEOUT_SECS / 2 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        if let Some(ok) = boot_settled(&stdout_of(&machine_argv(&["is-system-running"]))) {
+            booted = ok;
+            break;
+        }
+    }
+    let rehearsed = parse_failed(&stdout_of(&machine_argv(&["--failed", "--no-legend", "--plain"])));
+    let live = parse_failed(&stdout_of(&["systemctl", "--failed", "--no-legend", "--plain"].map(str::to_string)));
+    Ok(findings(booted, &regressions(&rehearsed, &live), deps_ok, kernel_ok))
 }
 
 fn notify() -> Result {
@@ -422,6 +651,96 @@ mod tests {
         assert!(!mentions("phpmyadmin", "php"));
         assert!(mentions("PHP-legacy ≥ 8.3", "php-legacy"));
         assert!(!mentions("linux-firmware split", "linux"));
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn ignores_units_that_cannot_work_in_a_container() {
+        for u in [
+            "systemd-modules-load.service",
+            "sys-kernel-debug.mount",
+            "dev-hugepages.mount",
+            "systemd-udevd.service",
+            "systemd-udev-trigger.service",
+            "NetworkManager-wait-online.service",
+            "greetd.service",
+            "dev-sda1.device",
+            "dev-zram0.swap",
+            "grub-btrfsd.service",
+            "snapper-timeline.service",
+            "snapper-cleanup.service",
+        ] {
+            assert!(ignored(u), "{u}");
+        }
+        assert!(!ignored("NetworkManager.service") && !ignored("bluetooth.service") && !ignored("home.mount"));
+    }
+
+    #[test]
+    fn regressions_are_new_failures_only() {
+        let out = "bluetooth.service loaded failed failed Bluetooth\n● cups.service loaded failed failed CUPS\n\
+                   greetd.service loaded failed failed Greeter\nold.service loaded failed failed Old\n\n";
+        let rehearsed = parse_failed(out);
+        assert_eq!(rehearsed, ["bluetooth.service", "cups.service", "greetd.service", "old.service"]);
+        assert_eq!(regressions(&rehearsed, &strings(&["old.service"])), ["bluetooth.service", "cups.service"]);
+        assert!(regressions(&strings(&["old.service"]), &strings(&["old.service", "x.service"])).is_empty());
+        assert!(parse_failed("").is_empty());
+    }
+
+    #[test]
+    fn boot_states() {
+        assert_eq!(boot_settled("running\n"), Some(true));
+        assert_eq!(boot_settled("degraded"), Some(true));
+        assert_eq!(boot_settled("maintenance"), Some(false));
+        for waiting in ["", "starting", "initializing", "offline", "unknown"] {
+            assert_eq!(boot_settled(waiting), None, "{waiting}");
+        }
+    }
+
+    #[test]
+    fn kernel_checks() {
+        let p = |name: &str| Pending { name: name.into(), old: "1".into(), new: "2".into() };
+        assert!(kernel_upgraded(&[p("mesa"), p("linux-zen")]));
+        assert!(!kernel_upgraded(&[p("linux-firmware"), p("linux-headers")]));
+        assert!(kernel_files_ok("14000000 vmlinuz-linux\n90000000 initramfs-linux.img\n0 other\n"));
+        assert!(!kernel_files_ok("14000000 vmlinuz-linux\n0 initramfs-linux.img\n"));
+        assert!(!kernel_files_ok("14000000 vmlinuz-linux\n"));
+        assert!(!kernel_files_ok(""));
+    }
+
+    #[test]
+    fn verdict_texts() {
+        assert!(findings(true, &[], true, true).is_empty());
+        let clean = verdict(&[], false);
+        assert!(clean.contains("Prova temiz") && clean.contains("donanım sürücüleri"));
+        let f = findings(false, &strings(&["cups.service"]), false, false);
+        assert_eq!(f.len(), 4);
+        let bad = verdict(&f, false);
+        assert!(bad.contains("! cups.service") && bad.contains("pacman -Dk") && bad.contains("YAPILMADI"), "{bad}");
+        assert!(bad.contains("donanım sürücüleri"));
+        let forced = verdict(&f, true);
+        assert!(forced.contains("yine de güncelleniyor") && !forced.contains("YAPILMADI"));
+    }
+
+    #[test]
+    fn rehearsal_commands() {
+        assert_eq!(
+            upgrade_argv().join(" "),
+            "sudo systemd-nspawn -q --register=no --as-pid2 -D /.osmium-prova --bind=/var/cache/pacman/pkg \
+             --setenv=SNAP_PAC_SKIP=y pacman -Syu --noconfirm"
+        );
+        assert_eq!(
+            nspawn_argv(&["pacman", "-Dk"]).join(" "),
+            "sudo systemd-nspawn -q --register=no --as-pid2 -D /.osmium-prova pacman -Dk"
+        );
+        let boot = boot_argv().join(" ");
+        assert!(boot.starts_with("sudo systemd-run --quiet --collect --unit osmium-prova.service "), "{boot}");
+        for part in ["--register=yes", "--machine=osmium-prova", "-D /.osmium-prova", "--boot", "--private-network", "--console=passive"] {
+            assert!(boot.contains(part), "{part}");
+        }
+        assert_eq!(machine_argv(&["is-system-running"]).join(" "), "sudo systemctl -M osmium-prova is-system-running");
     }
 
     #[test]

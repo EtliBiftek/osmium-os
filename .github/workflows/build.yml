@@ -172,6 +172,11 @@ jobs:
           echo "OSMIUM-GREETD $(systemctl is-active greetd)"
           journalctl -b -p err --no-pager | tail -40
           [ -d /home/tester/.config/quickshell/ii ] && echo OSMIUM-DOTS-OK
+          # Smoke-run the read-only tools on a real installed system (output only, never fatal).
+          for t in "osmium-doctor" "osmium-hw" "osmium-changes list" "osmium-auto check" "osmium-battery" "osmium-guest status" "osmium-apply plan /dev/null"; do
+            echo "OSMIUM-TOOL $t -> exit $(timeout 60 $t </dev/null >/tmp/t.out 2>&1; echo $?)"
+            head -c 1500 /tmp/t.out | sed 's/^/  | /'
+          done
           [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && echo OSMIUM-BOOT-OK
           systemctl poweroff
           SH

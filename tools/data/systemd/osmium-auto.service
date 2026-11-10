@@ -1,0 +1,10 @@
+[Unit]
+Description=Switch OsmiumOS modes automatically from context
+
+[Service]
+ExecStart=/usr/bin/osmium-auto run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

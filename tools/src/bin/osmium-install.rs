@@ -679,6 +679,11 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
     let (esp, part) = (part_path(&c.disk, 1), part_path(&c.disk, 2));
     let root_dev = if c.encrypt { format!("/dev/mapper/{MAPPER}") } else { part.clone() };
 
+    // A private mount point: otherwise every mount below /mnt is copied into the mount
+    // namespaces of running services (resolved, udevd, ...), which then keep the disk busy.
+    sh("mount", Command::new("mount").args(["--bind", MNT, MNT]))?;
+    sh("mount", Command::new("mount").args(["--make-private", MNT]))?;
+
     // The FAT format runs alongside LUKS + btrfs.
     std::thread::scope(|s| -> Result {
         let fat = s.spawn(|| sh("mkfs.fat", Command::new("mkfs.fat").args(["-F32", "-n", "EFI", &esp])));
@@ -956,8 +961,14 @@ fn cleanup() {
         succeeds(Command::new("kill").arg("-9").args(&pids));
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
-    if !succeeds(Command::new("umount").args(["-R", MNT])) {
-        succeeds(Command::new("umount").args(["-R", "-l", MNT]));
+    // Mounts are stacked on /mnt (private bind below, root on top): unmount until none is left.
+    for _ in 0..4 {
+        if !succeeds(Command::new("mountpoint").args(["-q", MNT])) {
+            break;
+        }
+        if !succeeds(Command::new("umount").args(["-R", MNT])) {
+            succeeds(Command::new("umount").args(["-R", "-l", MNT]));
+        }
     }
     // udev may still be probing the mapping right after the unmount.
     for _ in 0..10 {

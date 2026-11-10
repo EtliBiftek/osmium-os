@@ -85,6 +85,31 @@ the Hyprland ISO for manual partitioning (`sudo calamares`).
   packages or alternatives. `osmium-migrate scan`, then `osmium-migrate all <windows-user>`.
 - `osmium-history`: every 10 minutes `~/.config` is snapshotted locally.
   `osmium-history log`, `osmium-history diff <id>`, `osmium-history restore <id> [path]`.
+- `osmium-update prova`: rehearses the update. It upgrades a btrfs snapshot of the running system,
+  boots it in a container and compares failed units with the live system. Only a clean rehearsal
+  upgrades the real system, with exactly the rehearsed versions (`--provasiz` skips it). Drivers
+  and the kernel itself are not exercised in a container.
+- `osmium-doctor`: health check (failed units, full disks, btrfs errors, stale pacman lock,
+  orphans, journal errors, `.pacnew` files, snapshots, memory). `onar` offers each fix after an
+  `evet`; `--ai` lets the offline model explain the findings.
+- `osmium-changes`: what changed since a snapshot (default: since yesterday): packages, kernel,
+  `/etc` files, enabled units. `osmium-changes --ai "dünden beri sistem neden yavaş?"` asks the
+  offline model; `osmium-changes undo <n>` rolls back with snapper after an `evet`.
+- `osmium-try <paket>... [-- komut]`: installs and runs packages in a throwaway snapshot of the
+  root (`systemd-nspawn --ephemeral`); nothing remains after it closes.
+- `osmium-guest start`: a guest desktop on another VT with a tmpfs home; everything is deleted
+  when it ends. `osmium-guest cleanup` ends it by hand.
+- `osmium-auto`: switches modes from context. Rules in `~/.config/osmium/auto.rules`
+  (`osmium-auto init` writes an example), e.g. `oyun: uygulama=steam`, `sunum: ekran=2`,
+  `calisma: wifi=Ofis ve saat=09:00-18:00`, also `pil<20`, `priz`, `pilde`.
+  `osmium-auto check` shows which rule matches and why.
+- `osmium-battery hedef 4s`: battery budget. Steps down power profile, brightness and refresh
+  rate until the battery lasts 4 hours, and back up when there is room. `osmium-battery kapat`
+  restores everything.
+- `osmium-apply [dosya]`: declarative system file `~/.config/osmium/osmium.toml` (packages,
+  dots, mode, services, hostname, timezone). `plan` shows the difference, `export` writes the
+  current machine; share it with `osmium-share` and apply it on another machine.
+- `osmium-hw`: detects the GPU and virtual machine; `osmium-hw kur` installs the missing drivers.
 
 ## Compositor
 
