@@ -5,14 +5,23 @@
 //!
 //! Env: OSMIUM_REPO (published repo URL; enables package reuse and is used by the ISO),
 //!      GITHUB_RUN_NUMBER (pkgrel for local packages).
+//!
+//! Package reuse: an AUR package is downloaded from the published repo when its file names
+//! (`makepkg --packagelist`) are there. A local package is reused while its inputs (its
+//! directory and what its PKGBUILD takes from the repo through $OSMIUM_SRC) hash the same:
+//! the hash is published as `<name>.<hash>.built`, a list of the files built from it.
+//! `work/fresh.txt` names the files of ./repo that did not come from the published repo.
 
-use osmium_tools::{
-    REPO_URL, Result, append, osmium_repo_section, output, remove_dir, remove_file, run, succeeds,
-
-};
+use osmium_tools::{REPO_URL, Result, append, osmium_repo_section, output, remove_dir, remove_file, run, succeeds};
+use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Appended to makepkg's config. No -debug split packages: nothing installs them, and with
+/// `debug` on makepkg compiles Rust with full debug info. make uses every core.
+const MAKEPKG_CONF: &str = "# Written by osmium-build.\nOPTIONS+=('!debug')\nMAKEFLAGS=\"-j$(nproc)\"\n";
 
 fn main() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf();
@@ -88,6 +97,10 @@ fn iso(root: &Path, edition: &str) -> Result {
         append(profile.join("packages.x86_64"), "osmium-keyring
 ")?;
     }
+    // What the ISO installs, for `osmium-apply export` to leave out.
+    let base = profile.join("airootfs/usr/share/osmium/base-packages.txt");
+    io(fs::create_dir_all(base.parent().unwrap()), &base)?;
+    io(fs::copy(profile.join("packages.x86_64"), &base), &base)?;
     append(profile.join("pacman.conf"), &osmium_repo_section(&repo_url(), key.is_some()))?;
     let patch = read(&root.join("common/profiledef.patch.sh"))?;
     append(profile.join("profiledef.sh"), &format!("EDITION=\"{edition}\"\n{patch}"))?;
@@ -117,6 +130,11 @@ fn packages(root: &Path) -> Result {
     }
     let sudoers = Path::new("/etc/sudoers.d/builder");
     io(fs::write(sudoers, "builder ALL=(ALL) NOPASSWD: /usr/bin/pacman\n"), sudoers)?;
+    let conf = Path::new("/etc/makepkg.conf.d/osmium.conf");
+    io(fs::create_dir_all(conf.parent().unwrap()), conf)?;
+    io(fs::write(conf, MAKEPKG_CONF), conf)?;
+    // Files of `out` that were downloaded from the published repo, not built here.
+    let mut reused: BTreeSet<PathBuf> = BTreeSet::new();
 
     // AUR packages, pinned to reviewed commits.
     for line in read(&root.join("packages/aur.txt"))?.lines() {
@@ -134,7 +152,7 @@ fn packages(root: &Path) -> Result {
             .arg(&dir)
             .args(["-c", "advice.detachedHead=false", "checkout", "-q", commit]))?;
         import_pgp_keys(&dir)?;
-        build(root, &dir, &out, "-s")?;
+        build(root, &dir, &out, "-s", None, &mut reused)?;
     }
 
     // Our own packages. Built with --nodeps: CI preinstalls their build deps (rust).
@@ -147,13 +165,19 @@ fn packages(root: &Path) -> Result {
         .collect();
     dirs.sort();
     for src in dirs {
-        let dir = work.join(src.file_name().unwrap());
+        let name = src.file_name().unwrap().to_string_lossy().into_owned();
+        let dir = work.join(&name);
         run(Command::new("cp").arg("-a").arg(&src).arg(&dir))?;
         let pkgbuild = dir.join("PKGBUILD");
-        // Every CI run gets a new pkgrel so pacman sees config changes as upgrades.
-        let text = set_pkgrel(&read(&pkgbuild)?, &rel);
-        io(fs::write(&pkgbuild, text), &pkgbuild)?;
-        build(root, &dir, &out, "-d")?;
+        let original = read(&pkgbuild)?;
+        // A package rebuilt because its inputs changed gets this run's pkgrel, so pacman sees
+        // the change as an upgrade; an unchanged one keeps the files it was published with.
+        io(fs::write(&pkgbuild, set_pkgrel(&original, &rel)), &pkgbuild)?;
+        let marker = match input_roots(&name, &original) {
+            Some(roots) => Some(format!("{name}.{}.built", inputs_hash(root, &roots, &rebuild_salt(&original, week()))?)),
+            None => None,
+        };
+        build(root, &dir, &out, "-d", marker.as_deref(), &mut reused)?;
     }
 
     // Calamares silently drops its Python modules when Python is missing at build time.
@@ -185,6 +209,7 @@ fn packages(root: &Path) -> Result {
     }
     run(repo_add.arg(out.join("osmium.db.tar.gz")).args(pkg_files(&out)?))?;
     // GitHub release assets cannot be symlinks.
+    let fresh_list = root.join("work/fresh.txt");
     for (link, target) in [
         ("db", "db.tar.gz"),
         ("files", "files.tar.gz"),
@@ -197,7 +222,16 @@ fn packages(root: &Path) -> Result {
             io(fs::copy(&target, &link), &link)?;
         }
     }
-    Ok(())
+    // The publish step uploads only these: re-uploading an unchanged package would take it
+    // offline for a moment for every installed system.
+    let fresh: String = io(fs::read_dir(&out), &out)?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.is_file() && !reused.contains(p))
+        .filter_map(|p| Some(format!("{}\n", p.file_name()?.to_str()?)))
+        .collect::<BTreeSet<String>>()
+        .into_iter()
+        .collect();
+    io(fs::write(&fresh_list, fresh), &fresh_list)
 }
 
 fn set_pkgrel(pkgbuild: &str, rel: &str) -> String {
@@ -216,7 +250,6 @@ fn pkg_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(v)
 }
 
-/// Builds one PKGBUILD dir into `out`, unless every output file is already published.
 /// `validpgpkeys` fingerprints from an AUR checkout's .SRCINFO.
 fn pgp_keys(srcinfo: &str) -> Vec<String> {
     srcinfo
@@ -242,56 +275,198 @@ fn import_pgp_keys(dir: &Path) -> Result {
     Err(format!("{}: could not fetch PGP keys {}", dir.display(), keys.join(" ")))
 }
 
-fn build(root: &Path, dir: &Path, out: &Path, flags: &str) -> Result {
-    run(Command::new("chown").args(["-R", "builder"]).arg(dir))?;
-    let list = output(
-        Command::new("sudo")
-            .args(["-u", "builder", "makepkg", "--packagelist"])
-            .current_dir(dir),
-    )?;
-    let use_cache = std::env::var("OSMIUM_REPO").is_ok();
-    let names: Vec<_> = list.lines().filter_map(|l| Path::new(l).file_name()).collect();
-    let mut cached = use_cache;
-    for name in &names {
-        if !cached {
-            break;
-        }
-        let dest = out.join(name);
-        let url = format!("{}/{}", repo_url(), name.to_string_lossy());
-        cached = succeeds(Command::new("curl").args(["-fsL", "-o"]).arg(&dest).arg(&url));
-        if cached {
-            // Reuse its signature if one was published; otherwise it gets signed below.
-            let sig = sig_path(&dest);
-            if !succeeds(Command::new("curl").arg("-fsL").arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
-                remove_file(&sig)?;
+/// Repo entries a local package is built from: its own directory plus every top-level path
+/// its PKGBUILD reaches through $OSMIUM_SRC. None when a use of $OSMIUM_SRC cannot be
+/// resolved to a path: such a package is rebuilt every time.
+fn input_roots(name: &str, pkgbuild: &str) -> Option<Vec<String>> {
+    let mut roots = BTreeSet::from([format!("packages/{name}")]);
+    for line in pkgbuild.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        for (_, rest) in line.match_indices("OSMIUM_SRC").map(|(i, m)| line.split_at(i + m.len())) {
+            // `$OSMIUM_SRC/x`, `${OSMIUM_SRC}/x`, `${OSMIUM_SRC:?message}/x`
+            let rest = match rest.strip_prefix(':') {
+                Some(r) => r.split_once('}')?.1,
+                None => rest.strip_prefix('}').unwrap_or(rest),
+            };
+            let first = rest.strip_prefix('/')?.split(['/', '"', '\'', ' ', ')', ';', '$']).next()?;
+            if first.is_empty() || first == ".." {
+                return None;
             }
+            roots.insert(first.to_string());
         }
     }
-    if cached {
-        for name in &names {
-            println!("cached: {}", name.to_string_lossy());
-        }
+    Some(roots.into_iter().collect())
+}
+
+#[cfg(unix)]
+fn executable(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_: &fs::Metadata) -> bool {
+    false
+}
+
+/// Every file and symlink under `path`, sorted; build output (`target`) and `.git` are skipped.
+fn input_files(path: &Path, out: &mut Vec<PathBuf>) -> Result {
+    let meta = io(fs::symlink_metadata(path), path)?;
+    if !meta.is_dir() {
+        out.push(path.to_path_buf());
         return Ok(());
     }
-    // Partial hit: drop every downloaded file and signature so a rebuilt package
-    // never ships next to a signature for different bytes.
-    for name in &names {
+    let mut entries: Vec<PathBuf> = io(fs::read_dir(path), path)?.filter_map(|e| e.ok().map(|e| e.path())).collect();
+    entries.sort();
+    for e in entries {
+        if !e.file_name().is_some_and(|n| n == "target" || n == ".git") {
+            input_files(&e, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// The bytes that identify a set of inputs: path, kind and content of every file.
+fn inputs_manifest(root: &Path, roots: &[String]) -> Result<Vec<u8>> {
+    let mut files = Vec::new();
+    for r in roots {
+        input_files(&root.join(r), &mut files)?;
+    }
+    let mut m = Vec::new();
+    for f in files {
+        let meta = io(fs::symlink_metadata(&f), &f)?;
+        let (kind, body) = if meta.is_symlink() {
+            ('l', io(fs::read_link(&f), &f)?.to_string_lossy().into_owned().into_bytes())
+        } else {
+            (if executable(&meta) { 'x' } else { 'f' }, io(fs::read(&f), &f)?)
+        };
+        let rel = f.strip_prefix(root).unwrap_or(&f).to_string_lossy().replace('\\', "/");
+        m.extend_from_slice(format!("{kind} {rel}\0{}\0", body.len()).as_bytes());
+        m.extend_from_slice(&body);
+    }
+    Ok(m)
+}
+
+/// Weeks since 1970.
+fn week() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / (7 * 86_400))
+}
+
+/// Compiled packages link against Arch's libraries, which move on without any input here
+/// changing: they are rebuilt at least once a week. `any` packages have nothing to go stale.
+fn rebuild_salt(pkgbuild: &str, week: u64) -> String {
+    let any = pkgbuild.lines().any(|l| matches!(l.trim(), "arch=('any')" | "arch=(any)" | "arch=(\"any\")"));
+    if any { String::new() } else { format!("week {week}\n") }
+}
+
+/// First 16 hex digits of the sha256 of `salt`, the makepkg settings and the manifest
+/// (std has no hash that is stable across versions).
+fn inputs_hash(root: &Path, roots: &[String], salt: &str) -> Result<String> {
+    let mut manifest = format!("{salt}{MAKEPKG_CONF}").into_bytes();
+    manifest.extend(inputs_manifest(root, roots)?);
+    let mut child = Command::new("sha256sum")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("sha256sum: {e}"))?;
+    // sha256sum prints only after its input ends, so writing everything first cannot block.
+    let written = child.stdin.take().ok_or("sha256sum: stdin")?.write_all(&manifest);
+    let out = child.wait_with_output().map_err(|e| format!("sha256sum: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    match (written, text.get(..16)) {
+        (Ok(()), Some(hex)) if out.status.success() && hex.bytes().all(|b| b.is_ascii_hexdigit()) => Ok(hex.to_string()),
+        _ => Err("sha256sum failed".into()),
+    }
+}
+
+/// Package file names from a published `.built` marker; None unless every line is one.
+fn parse_marker(text: &str) -> Option<Vec<String>> {
+    let names: Vec<String> = text.lines().map(str::to_string).collect();
+    let ok = |n: &String| n.ends_with(".pkg.tar.zst") && !n.starts_with('.') && !n.contains(['/', '\\', ':']);
+    (!names.is_empty() && names.iter().all(ok)).then_some(names)
+}
+
+/// Downloads the named packages (and their signatures, where published) into `out`.
+/// False, with nothing left behind, unless all of them are there.
+fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Result<bool> {
+    let mut got = Vec::new();
+    let mut all = true;
+    for name in names {
         let dest = out.join(name);
-        remove_file(sig_path(&dest))?;
-        remove_file(&dest)?;
+        let url = format!("{}/{name}", repo_url());
+        got.push(dest.clone());
+        if !succeeds(Command::new("curl").args(["-fsL", "--retry", "2", "-o"]).arg(&dest).arg(&url)) {
+            all = false;
+            break;
+        }
+        // Reuse its signature if one was published; otherwise it gets signed in packages().
+        let sig = sig_path(&dest);
+        got.push(sig.clone());
+        if !succeeds(Command::new("curl").arg("-fsL").arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
+            remove_file(&sig)?;
+        }
+    }
+    if !all {
+        // Partial hit: drop every downloaded file and signature so a rebuilt package
+        // never ships next to a signature for different bytes.
+        for f in &got {
+            remove_file(f)?;
+        }
+        return Ok(false);
+    }
+    reused.extend(got.into_iter().filter(|f| f.is_file()));
+    Ok(true)
+}
+
+/// Builds one PKGBUILD dir into `out`, unless its packages are already published.
+/// `marker` is the `.built` file name of a local package (see the module docs).
+fn build(root: &Path, dir: &Path, out: &Path, flags: &str, marker: Option<&str>, reused: &mut BTreeSet<PathBuf>) -> Result {
+    run(Command::new("chown").args(["-R", "builder"]).arg(dir))?;
+    let published = if std::env::var("OSMIUM_REPO").is_err() {
+        None
+    } else if let Some(marker) = marker {
+        output(Command::new("curl").args(["-fsL", "--retry", "2"]).arg(format!("{}/{marker}", repo_url())))
+            .ok()
+            .and_then(|text| parse_marker(&text))
+    } else {
+        let list = output(
+            Command::new("sudo")
+                .args(["-u", "builder", "makepkg", "--packagelist"])
+                .current_dir(dir),
+        )?;
+        Some(list.lines().filter_map(|l| Some(Path::new(l).file_name()?.to_str()?.to_string())).collect())
+    };
+    if let Some(names) = published.filter(|n: &Vec<String>| !n.is_empty())
+        && download(out, &names, reused)?
+    {
+        for name in &names {
+            println!("cached: {name}");
+        }
+        write_marker(out, marker, &names)?;
+        // Already published with exactly this content.
+        reused.extend(marker.map(|m| out.join(m)));
+        return Ok(());
     }
     run(Command::new("sudo")
         .args(["-u", "builder", "env"])
         .arg(format!("OSMIUM_SRC={}", root.display()))
         .args(["makepkg", flags, "-f", "--noconfirm"])
         .current_dir(dir))?;
+    let mut built = Vec::new();
     for p in pkg_files(dir)? {
         let dest = out.join(p.file_name().unwrap());
         io(fs::rename(&p, &dest), &p)?;
         // New bytes: force a fresh signature in packages().
         remove_file(sig_path(&dest))?;
+        built.push(p.file_name().unwrap().to_string_lossy().into_owned());
     }
-    Ok(())
+    write_marker(out, marker, &built)
+}
+
+/// Publishes which files a local package's inputs produced (kept while they are reused).
+fn write_marker(out: &Path, marker: Option<&str>, names: &[String]) -> Result {
+    let Some(marker) = marker else { return Ok(()) };
+    let path = out.join(marker);
+    io(fs::write(&path, names.iter().map(|n| format!("{n}\n")).collect::<String>()), &path)
 }
 
 fn sig_path(pkg: &Path) -> PathBuf {
@@ -320,6 +495,100 @@ pkgname = wlogout
     fn pkgrel_replaced_only_on_its_line() {
         let s = set_pkgrel("pkgname=x\npkgrel=1\n# pkgrel=9 in comment\n", "42");
         assert_eq!(s, "pkgname=x\npkgrel=42\n# pkgrel=9 in comment\n");
+    }
+
+    #[test]
+    fn inputs_named_by_the_pkgbuild() {
+        let roots = |name: &str, text: &str| input_roots(name, text);
+        assert_eq!(roots("ttf-lexend", "pkgname=ttf-lexend\n").unwrap(), ["packages/ttf-lexend"]);
+        let tools = "# osmium-build sets OSMIUM_SRC to the repo root.\n\
+                     build() { cargo build --manifest-path \"${OSMIUM_SRC:?build with osmium-build}/tools/Cargo.toml\"; }\n\
+                     package() {\n  install -Dm644 \"$OSMIUM_SRC/LICENSE\" -t x\n  local data=\"$OSMIUM_SRC/tools/data\"\n  cp ${OSMIUM_SRC}/keys/osmium.asc x\n}\n";
+        assert_eq!(roots("osmium-tools", tools).unwrap(), ["LICENSE", "keys", "packages/osmium-tools", "tools"]);
+        // Uses that name no path cannot be tracked: never reuse such a package.
+        assert_eq!(roots("x", "package() { cd \"$OSMIUM_SRC\"; }"), None);
+        assert_eq!(roots("x", "package() { cp -r \"$OSMIUM_SRC/\" x; }"), None);
+        assert_eq!(roots("x", "package() { cat $OSMIUM_SRC/../secret; }"), None);
+    }
+
+    #[test]
+    fn every_shipped_pkgbuild_has_trackable_inputs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let mut seen = 0;
+        for e in fs::read_dir(root.join("packages")).unwrap().flatten().filter(|e| e.path().is_dir()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let roots = input_roots(&name, &fs::read_to_string(e.path().join("PKGBUILD")).unwrap());
+            let roots = roots.unwrap_or_else(|| panic!("{name}: $OSMIUM_SRC use without a path"));
+            for r in &roots {
+                // keys/osmium.asc is optional; everything else a PKGBUILD names must exist.
+                assert!(root.join(r).exists() || r == "keys", "{name}: {r} is not in the repo");
+            }
+            seen += 1;
+        }
+        assert!(seen >= 8);
+    }
+
+    #[test]
+    fn manifest_changes_with_content_name_and_mode() {
+        let d = std::env::temp_dir().join(format!("osmium-build-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("packages/a/overlay")).unwrap();
+        fs::create_dir_all(d.join("tools/target/debug")).unwrap();
+        fs::write(d.join("packages/a/PKGBUILD"), "pkgname=a\n").unwrap();
+        fs::write(d.join("packages/a/overlay/x"), "1").unwrap();
+        fs::write(d.join("tools/main.rs"), "fn main() {}").unwrap();
+        fs::write(d.join("tools/target/debug/junk"), "build output").unwrap();
+        let roots = ["packages/a".to_string(), "tools".to_string()];
+        let base = inputs_manifest(&d, &roots).unwrap();
+        assert_eq!(inputs_manifest(&d, &roots).unwrap(), base, "stable");
+        let text = String::from_utf8_lossy(&base).into_owned();
+        assert!(text.contains("f packages/a/overlay/x\u{0}1\u{0}1") && text.contains("tools/main.rs"), "{text:?}");
+        assert!(!text.contains("junk"), "build output is not an input");
+
+        fs::write(d.join("tools/target/debug/junk"), "other").unwrap();
+        assert_eq!(inputs_manifest(&d, &roots).unwrap(), base);
+        fs::write(d.join("packages/a/overlay/x"), "2").unwrap();
+        let edited = inputs_manifest(&d, &roots).unwrap();
+        assert_ne!(edited, base);
+        fs::rename(d.join("packages/a/overlay/x"), d.join("packages/a/overlay/y")).unwrap();
+        assert_ne!(inputs_manifest(&d, &roots).unwrap(), edited);
+        assert!(inputs_manifest(&d, &["missing".to_string()]).is_err());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let before = inputs_manifest(&d, &roots).unwrap();
+            fs::set_permissions(d.join("packages/a/overlay/y"), fs::Permissions::from_mode(0o755)).unwrap();
+            assert_ne!(inputs_manifest(&d, &roots).unwrap(), before);
+            let h = inputs_hash(&d, &roots, "").unwrap();
+            assert!(h.len() == 16 && h.bytes().all(|b| b.is_ascii_hexdigit()), "{h}");
+            assert_eq!(inputs_hash(&d, &roots, "").unwrap(), h);
+            assert_ne!(inputs_hash(&d, &roots, "week 1\n").unwrap(), h);
+        }
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn compiled_packages_are_rebuilt_weekly() {
+        assert_eq!(rebuild_salt("pkgname=a\narch=('any')\n", 7), "");
+        assert_eq!(rebuild_salt("pkgname=a\narch=('x86_64')\n", 7), "week 7\n");
+        assert_ne!(rebuild_salt("arch=('x86_64')", 7), rebuild_salt("arch=('x86_64')", 8));
+        assert!(week() > 2900);
+    }
+
+    #[test]
+    fn marker_lists_package_files_only() {
+        assert_eq!(
+            parse_marker("a-1-2-any.pkg.tar.zst\nb-debug-1-2-x86_64.pkg.tar.zst\n").unwrap(),
+            ["a-1-2-any.pkg.tar.zst", "b-debug-1-2-x86_64.pkg.tar.zst"]
+        );
+        for bad in ["", "\n", "<html>Not Found</html>", "../a.pkg.tar.zst\n", "a.pkg.tar.zst\nosmium.db\n", "a-1:2-1-any.pkg.tar.zst"] {
+            assert_eq!(parse_marker(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn makepkg_conf_is_valid_shell_text() {
+        assert!(MAKEPKG_CONF.contains("OPTIONS+=('!debug')\n") && MAKEPKG_CONF.contains("MAKEFLAGS=\"-j$(nproc)\"\n"));
     }
 
     #[test]

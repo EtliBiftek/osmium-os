@@ -5,6 +5,7 @@ Arch Linux based distribution with a Hyprland desktop (running hyprland-rust).
 ## Build
 
 GitHub Actions builds the ISO on every push to `main`. Download it from the run's artifacts.
+Packages whose inputs did not change are reused from the published repo instead of being rebuilt.
 
 Local build on Arch (as root):
 
@@ -60,6 +61,11 @@ region, user and desktop (built-in dots or one found on GitHub), then runs
 - unpacks the live squashfs with every core (`unsquashfs`), no downloads,
 - configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 initramfs
   (no fallback image) and installs GRUB with grub-btrfs snapshots, in parallel where possible.
+
+With LUKS, GRUB asks for the passphrase before any keymap is loaded and reads the keys as a US
+keyboard. For the Turkish, German and French layouts the installer therefore adds a second key
+slot holding what the same key presses type on a US layout, so the passphrase opens the disk at
+boot exactly as it was typed in the installer.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
 stdin (`key=value` lines). UEFI only. For manual partitioning the ISO also has Calamares
