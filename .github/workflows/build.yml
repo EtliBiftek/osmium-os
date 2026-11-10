@@ -234,7 +234,7 @@ jobs:
           sudo grep -aq OSMIUM-DOTS-OK boot.log || echo "::warning::ii dots were not applied to the installed user"
           sudo grep -aq OSMIUM-PKG-FILES-OK boot.log || echo "::warning::installed packages are missing files (pacman -Qk)"
           sudo grep -aq OSMIUM-SNAPSHOT-OK boot.log || echo "::warning::no 'Kurulum' snapper snapshot after install"
-          # The serial log ends lines in , so require a unit name, not just any character.
+          # Serial log lines end in CR, so require a unit name, not just any character.
           if sudo grep -aqE "OSMIUM-FAILED-UNITS [[:alnum:]@_.-]+" boot.log; then echo "::error::units failed on the installed system"; exit 1; fi
       - uses: actions/upload-artifact@v4
         if: failure()
