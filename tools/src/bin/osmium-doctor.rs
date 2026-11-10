@@ -128,33 +128,65 @@ fn pacman_running() -> bool {
     succeeds(Command::new("pgrep").args(["-x", LOCK_HOLDERS]))
 }
 
+/// The checks are independent and mostly wait on a subprocess (`pacman -Qk` alone takes
+/// seconds), so they run side by side; the report keeps this order.
+const CHECKS: &[fn() -> Vec<Finding>] = &[
+    check_units,
+    check_disks,
+    check_btrfs,
+    check_lock,
+    check_package_files,
+    check_orphans,
+    check_journal,
+    check_pacnew,
+    check_cache,
+    check_snapper,
+    check_memory,
+];
+
 fn collect() -> Vec<Finding> {
-    let mut f = Vec::new();
+    std::thread::scope(|s| {
+        let running: Vec<_> = CHECKS.iter().map(|check| s.spawn(check)).collect();
+        running.into_iter().flat_map(|h| h.join().unwrap_or_else(|_| vec![unknown("iç hata")])).collect()
+    })
+}
 
-    for user in [false, true] {
-        let mut argv = vec!["systemctl", "--failed", "--no-legend", "--plain", "--no-pager"];
-        if user {
-            argv.insert(1, "--user");
-        }
-        f.push(match capture(&argv) {
-            Some(t) => units_finding(user, parse_units(&t)),
-            None => unknown(if user { "kullanıcı birimleri" } else { "sistem birimleri" }),
-        });
-    }
+fn check_units() -> Vec<Finding> {
+    [false, true]
+        .into_iter()
+        .map(|user| {
+            let mut argv = vec!["systemctl", "--failed", "--no-legend", "--plain", "--no-pager"];
+            if user {
+                argv.insert(1, "--user");
+            }
+            match capture(&argv) {
+                Some(t) => units_finding(user, parse_units(&t)),
+                None => unknown(if user { "kullanıcı birimleri" } else { "sistem birimleri" }),
+            }
+        })
+        .collect()
+}
 
+fn check_disks() -> Vec<Finding> {
     match capture(&["df", "--output=pcent,target", "/", "/home"]) {
-        Some(t) => f.extend(parse_df(&t).into_iter().map(|(target, pct)| disk_finding(&target, pct))),
-        None => f.push(unknown("disk doluluğu")),
+        Some(t) => parse_df(&t).into_iter().map(|(target, pct)| disk_finding(&target, pct)).collect(),
+        None => vec![unknown("disk doluluğu")],
     }
+}
 
-    f.push(match capture_root(&["btrfs", "device", "stats", "/"]) {
+fn check_btrfs() -> Vec<Finding> {
+    vec![match capture_root(&["btrfs", "device", "stats", "/"]) {
         Some(t) => btrfs_finding(&parse_btrfs_stats(&t)),
         None => unknown("btrfs aygıt hataları"),
-    });
+    }]
+}
 
-    f.push(lock_finding(Path::new(DB_LOCK).exists(), pacman_running()));
+fn check_lock() -> Vec<Finding> {
+    vec![lock_finding(Path::new(DB_LOCK).exists(), pacman_running())]
+}
 
-    f.push(match capture_any(&["pacman", "-Qkq"]) {
+fn check_package_files() -> Vec<Finding> {
+    vec![match capture_any(&["pacman", "-Qkq"]) {
         Some(t) => {
             // Without root, files in root-only directories look missing: keep the ones that really are.
             let gone = |l: &&str| {
@@ -165,17 +197,21 @@ fn collect() -> Vec<Finding> {
             missing_finding(&t.lines().filter(gone).collect::<Vec<_>>().join("\n"))
         }
         None => unknown("paket dosyaları"),
-    });
+    }]
+}
 
-    f.push(match capture_any(&["pacman", "-Qtdq"]) {
+fn check_orphans() -> Vec<Finding> {
+    vec![match capture_any(&["pacman", "-Qtdq"]) {
         Some(t) => orphans_finding(parse_names(&t)),
         None => unknown("sahipsiz paketler"),
-    });
+    }]
+}
 
-    f.push(match capture(&["journalctl", "-b", "-p", "err", "-q", "--no-pager", "-o", "cat"]) {
+fn check_journal() -> Vec<Finding> {
+    let mut f = vec![match capture(&["journalctl", "-b", "-p", "err", "-q", "--no-pager", "-o", "cat"]) {
         Some(t) => journal_finding(&t),
         None => unknown("günlük hataları"),
-    });
+    }];
     if let Some(bytes) = capture(&["journalctl", "--disk-usage"]).and_then(|t| journal_usage(&t))
         && bytes > JOURNAL_LIMIT
     {
@@ -185,34 +221,43 @@ fn collect() -> Vec<Finding> {
             fix: Some(Fix::Journal),
         });
     }
+    f
+}
 
-    f.push(match capture(&["pacdiff", "-o"]) {
+fn check_pacnew() -> Vec<Finding> {
+    vec![match capture(&["pacdiff", "-o"]) {
         Some(t) => pacnew_finding(&t),
         None => unknown(".pacnew dosyaları"),
-    });
+    }]
+}
 
+fn check_cache() -> Vec<Finding> {
     let n = capture_any(&["paccache", "-dk2"]).map_or(0, |t| cache_candidates(&t));
-    if n > 0 {
-        f.push(Finding {
-            sev: Sev::Warn,
-            text: format!("paket önbelleğinde silinebilecek {n} eski paket var"),
-            fix: Some(Fix::PkgCache),
-        });
+    if n == 0 {
+        return Vec::new();
     }
+    vec![Finding {
+        sev: Sev::Warn,
+        text: format!("paket önbelleğinde silinebilecek {n} eski paket var"),
+        fix: Some(Fix::PkgCache),
+    }]
+}
 
-    f.push(match capture_root(&["snapper", "--csvout", "-c", "root", "list", "--columns", "number"]) {
+fn check_snapper() -> Vec<Finding> {
+    vec![match capture_root(&["snapper", "--csvout", "-c", "root", "list", "--columns", "number"]) {
         Some(t) => snapper_finding(
             snapper_count(&t),
             succeeds(Command::new("systemctl").args(["is-active", "snapper-timeline.timer"])),
         ),
         None => finding(Sev::Warn, "snapper: anlık görüntüler okunamadı (önce `sudo -v`, sonra tekrar deneyin)"),
-    });
+    }]
+}
 
-    f.push(match std::fs::read_to_string("/proc/meminfo").ok().and_then(|t| meminfo(&t)) {
+fn check_memory() -> Vec<Finding> {
+    vec![match std::fs::read_to_string("/proc/meminfo").ok().and_then(|t| meminfo(&t)) {
         Some((total, avail, swap)) => mem_finding(total, avail, swap),
         None => unknown("bellek"),
-    });
-    f
+    }]
 }
 
 // ---------- parsers and decisions ----------

@@ -10,8 +10,7 @@
 //! 60 Hz, dimmer still. Whatever it changes is first written to
 //! ~/.local/state/osmium/battery/saved, so `kapat` restores even after a crash.
 
-use osmium_tools::{Result, exit_on_err, output, remove_dir, run, state_home, succeeds};
-use std::collections::BTreeMap;
+use osmium_tools::{Result, exit_on_err, json_objects, output, remove_dir, run, state_home, succeeds};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -250,18 +249,8 @@ fn warn(res: Result) {
     }
 }
 
-/// A user unit starts outside the compositor's environment, so hyprctl would
-/// not find the instance: point it at the newest one.
 fn hyprctl(args: &[&str]) -> Result<String> {
-    let mut cmd = Command::new("hyprctl");
-    if std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_none() {
-        let dirs = std::env::var_os("XDG_RUNTIME_DIR").and_then(|d| fs::read_dir(PathBuf::from(d).join("hypr")).ok());
-        let newest = dirs.into_iter().flatten().flatten().max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok());
-        if let Some(e) = newest {
-            cmd.env("HYPRLAND_INSTANCE_SIGNATURE", e.file_name());
-        }
-    }
-    output(cmd.args(args))
+    output(osmium_tools::hyprctl().args(args))
 }
 
 /// hyprctl exits 0 even when the compositor refuses, and then prints the reason instead of `ok`.
@@ -270,60 +259,6 @@ fn set_monitor(spec: &str) -> Result {
         "ok" => Ok(()),
         other => Err(format!("hyprctl keyword monitor {spec}: {other}")),
     }
-}
-
-/// Scalar fields of each object in a top-level JSON array, as text. Nested
-/// values are skipped: enough for `hyprctl monitors -j`, and there is no JSON crate.
-// shortcut: same scanner as osmium-auto.rs; move it to lib.rs when that file is free to edit.
-fn json_objects(text: &str) -> Vec<BTreeMap<String, String>> {
-    let mut out: Vec<BTreeMap<String, String>> = Vec::new();
-    let mut depth = 0;
-    let mut key: Option<String> = None;
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        let value = match c {
-            '{' | '[' => {
-                depth += 1;
-                key = None;
-                if c == '{' && depth == 2 {
-                    out.push(BTreeMap::new());
-                }
-                continue;
-            }
-            '}' | ']' => {
-                depth -= 1;
-                continue;
-            }
-            '"' => {
-                let mut s = String::new();
-                while let Some(c) = chars.next() {
-                    match c {
-                        '"' => break,
-                        '\\' => s.extend(chars.next()),
-                        c => s.push(c),
-                    }
-                }
-                s
-            }
-            c if c.is_ascii_alphanumeric() || c == '-' => {
-                let mut s = String::from(c);
-                while let Some(n) = chars.next_if(|n| !matches!(n, ',' | '}' | ']') && !n.is_whitespace()) {
-                    s.push(n);
-                }
-                s
-            }
-            _ => continue,
-        };
-        if depth == 2 {
-            match (key.take(), out.last_mut()) {
-                (Some(k), Some(object)) => {
-                    object.insert(k, value);
-                }
-                _ => key = Some(value),
-            }
-        }
-    }
-    out
 }
 
 /// (60 Hz value, restore value) for `hyprctl keyword monitor`, per monitor running above 60 Hz.

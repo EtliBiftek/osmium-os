@@ -76,16 +76,16 @@ fn describe(g: Gpu) -> &'static str {
 
 fn detect_gpus() -> Vec<Gpu> {
     let read = |p: std::path::PathBuf| fs::read_to_string(p).unwrap_or_default();
-    let mut v: Vec<Gpu> = fs::read_dir("/sys/bus/pci/devices")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let d = e.path();
-            classify(&read(d.join("vendor")), &read(d.join("device")), &read(d.join("class")))
-        })
-        .collect();
-    v.dedup();
+    let mut v: Vec<Gpu> = Vec::new();
+    for e in fs::read_dir("/sys/bus/pci/devices").into_iter().flatten().flatten() {
+        let d = e.path();
+        // Each kind once: two cards of one kind want the same packages.
+        if let Some(g) = classify(&read(d.join("vendor")), &read(d.join("device")), &read(d.join("class")))
+            && !v.contains(&g)
+        {
+            v.push(g);
+        }
+    }
     v
 }
 
