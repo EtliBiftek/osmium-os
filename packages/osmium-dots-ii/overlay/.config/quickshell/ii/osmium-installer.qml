@@ -76,7 +76,7 @@ ApplicationWindow {
         const kv = {
             disk: disk, encrypt: encrypt ? "1" : "0", passphrase: encrypt ? passphrase : "",
             hostname: hostname, username: username, fullname: fullname, password: password,
-            timezone: timezone, locale: locale, keymap: keymap, xkb_layout: xkbLayout,
+            timezone: timezone, locale: locale, keymap: keymap, xkblayout: xkbLayout,
             dots: dots, dots_mode: dotsMode,
         }
         return Object.keys(kv).map(k => `${k}=${clean(kv[k])}`).join("\n") + "\n"

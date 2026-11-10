@@ -9,8 +9,11 @@
 //! LUKS1 so GRUB can read /boot), built for speed: the squashfs is unpacked on all cores,
 //! independent chroot work runs in parallel, the initramfs is zstd -1, and there is no
 //! fallback image, swap file or os-prober.
+//!
+//! GRUB reads the LUKS passphrase with a US keymap. For the layouts in `US_KEYS` key slot 0
+//! holds what the same key presses give there, slot 1 the passphrase as typed.
 
-use osmium_tools::{Result, output, succeeds};
+use osmium_tools::{Result, json_str, output, succeeds};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::fs;
@@ -145,38 +148,18 @@ impl Disk {
     }
 }
 
-fn json_str(s: &str) -> String {
-    let mut o = String::with_capacity(s.len() + 2);
-    o.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => o.push_str("\\\""),
-            '\\' => o.push_str("\\\\"),
-            '\n' => o.push_str("\\n"),
-            '\r' => o.push_str("\\r"),
-            '\t' => o.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(o, "\\u{:04x}", c as u32);
-            }
-            c => o.push(c),
-        }
-    }
-    o.push('"');
-    o
-}
-
 /// Decodes the `\xNN` escapes lsblk -P uses.
 fn unescape_lsblk(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
     while i < b.len() {
-        if b[i] == b'\\' && b.get(i + 1) == Some(&b'x') {
-            if let Some(v) = s.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(v);
-                i += 4;
-                continue;
-            }
+        if b[i] == b'\\' && b.get(i + 1) == Some(&b'x')
+            && let Some(v) = s.get(i + 2..i + 4).and_then(|h| u8::from_str_radix(h, 16).ok())
+        {
+            out.push(v);
+            i += 4;
+            continue;
         }
         out.push(b[i]);
         i += 1;
@@ -462,6 +445,75 @@ fn parse_pct(line: &str) -> Option<u8> {
     t.parse::<u8>().ok().filter(|&p| p <= 100)
 }
 
+/// One line of a Hyprland config with its `kb_layout` value replaced, or None when the line
+/// does not set it. Lua lines are only touched when the value is a string literal.
+fn kb_layout_line(line: &str, layout: &str, lua: bool) -> Option<String> {
+    let body = line.trim_start();
+    if body.starts_with('#') || body.starts_with("--") {
+        return None;
+    }
+    let key = line.find("kb_layout")?;
+    if line[..key].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    let value = line[key + "kb_layout".len()..].trim_start().strip_prefix('=')?;
+    let head = &line[..line.len() - value.len()];
+    let v = value.trim_start();
+    let pad = &value[..value.len() - v.len()];
+    if lua {
+        let q = v.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+        let end = v[1..].find(q)? + 1;
+        Some(format!("{head}{pad}{q}{layout}{q}{}", &v[end + 1..]))
+    } else {
+        // hyprlang: the value runs to the end of the line.
+        let eol = &v[v.trim_end_matches(['\r', '\n']).len()..];
+        Some(format!("{head}{pad}{layout}{eol}"))
+    }
+}
+
+/// A Hyprland config (Lua or hyprlang) with every `kb_layout` set to `layout`; None when
+/// nothing changes.
+fn set_kb_layout(text: &str, layout: &str, lua: bool) -> Option<String> {
+    let mut changed = false;
+    let mut out = String::with_capacity(text.len() + 8);
+    for line in text.split_inclusive('\n') {
+        match kb_layout_line(line, layout, lua) {
+            Some(new) => {
+                changed |= new != line;
+                out.push_str(&new);
+            }
+            None => out.push_str(line),
+        }
+    }
+    changed.then_some(out)
+}
+
+/// (layout, characters as typed, what the same keys give on a US keyboard). Only keys reached
+/// without AltGr or dead keys; ASCII letters, digits and space not listed stay as they are.
+const US_KEYS: &[(&str, &str, &str)] = &[
+    ("tr", r#"ıiİğĞüÜşŞöÖçÇ.:,;"é'^+&/()=*?-_!%"#, r#"i'"[{]};:,<.>/?\|`~@#$^&*()-_=+!%"#),
+    ("de", r#"zyZYßüÜ+*öÖäÄ#'-_"§&/()=?;:°!$%,."#, r#"yzYZ-[{]};:'"\|/?@#^&*()_<>~!$%,."#),
+    (
+        "fr",
+        r#"aqzwAQZWmM,?;.:/!§ù%$£*µ&é"'(-è_çà)=1234567890°+²"#,
+        r#"qawzQAWZ;:mM,<.>/?'"]}\|1234567890-=!@#$%^&*()_+`"#,
+    ),
+];
+
+/// What GRUB reads when the keys that type `pass` on `layout` are pressed: GRUB asks for the
+/// LUKS passphrase with a US keymap, whatever the system layout is (on a Turkish keyboard the
+/// `i` key gives `'`). None for layouts without a table and for characters the table cannot
+/// place (AltGr, dead keys, the extra ISO key).
+fn grub_passphrase(pass: &str, layout: &str) -> Option<String> {
+    let (_, from, to) = US_KEYS.iter().find(|t| Some(t.0) == layout.split(',').next())?;
+    pass.chars()
+        .map(|c| match from.chars().position(|f| f == c) {
+            Some(i) => to.chars().nth(i),
+            None => (c.is_ascii_alphanumeric() || c == ' ').then_some(c),
+        })
+        .collect()
+}
+
 fn plan_step(id: &str) -> (u8, &'static str) {
     PLAN.iter().find(|s| s.0 == id).map(|s| (s.1, s.2)).unwrap_or((0, ""))
 }
@@ -684,20 +736,26 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
     sh("mount", Command::new("mount").args(["--bind", MNT, MNT]))?;
     sh("mount", Command::new("mount").args(["--make-private", MNT]))?;
 
+    // What GRUB will read when the passphrase is typed at boot, if that differs.
+    let grub_pass =
+        Some(c).filter(|c| c.encrypt).and_then(|c| grub_passphrase(&c.passphrase, &c.xkblayout)).filter(|g| *g != c.passphrase);
+
     // The FAT format runs alongside LUKS + btrfs.
     std::thread::scope(|s| -> Result {
         let fat = s.spawn(|| sh("mkfs.fat", Command::new("mkfs.fat").args(["-F32", "-n", "EFI", &esp])));
         let main = (|| -> Result {
             if c.encrypt {
                 // LUKS1: GRUB reads /boot from the encrypted root. 1 s iteration keeps GRUB's unlock quick.
-                sh_in(
-                    "cryptsetup luksFormat",
-                    Command::new("cryptsetup").args([
-                        "luksFormat", "--type", "luks1", "--batch-mode", "--key-size", "512",
-                        "--hash", "sha256", "--iter-time", "1000", "--key-file=-", &part,
-                    ]),
-                    &c.passphrase,
-                )?;
+                let mut format = vec![
+                    "luksFormat", "--type", "luks1", "--batch-mode", "--key-size", "512",
+                    "--hash", "sha256", "--iter-time", "1000", "--key-file=-",
+                ];
+                if grub_pass.is_some() {
+                    // GRUB tries the slots in order: slot 0 is kept for the key it will be given.
+                    format.extend(["--key-slot", "1"]);
+                }
+                format.push(&part);
+                sh_in("cryptsetup luksFormat", Command::new("cryptsetup").args(&format), &c.passphrase)?;
                 sh_in(
                     "cryptsetup open",
                     Command::new("cryptsetup").args(["open", "--type", "luks", "--key-file=-", &part, MAPPER]),
@@ -726,9 +784,37 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
 
     let luks_uuid = if c.encrypt { Some(uuid(&part)?) } else { None };
     if c.encrypt {
+        if let Some(g) = &grub_pass
+            && let Err(e) = add_grub_key(c, &part, g)
+        {
+            // Not fatal: the disk still opens with the passphrase typed on a US layout.
+            emit("format", plan_step("format").0, &format!("uyarı: açılış parolası için ek anahtar eklenemedi: {e}"));
+        }
         add_keyfile(c, &part)?;
     }
     Ok(Layout { root_uuid: uuid(&root_dev)?, esp_uuid: uuid(&esp)?, esp, luks_uuid })
+}
+
+/// Key slot 0 for the passphrase as GRUB reads it (US keymap), so the keys the user pressed
+/// in the installer also open the disk at boot.
+fn add_grub_key(c: &Config, part: &str, grub_pass: &str) -> Result {
+    // /run is a tmpfs: the key never reaches a disk. Mode first, content second.
+    let path = "/run/osmium-install.key";
+    let _ = fs::remove_file(path);
+    let res = fs::write(path, "")
+        .map_err(|e| format!("{path}: {e}"))
+        .and_then(|()| chmod(path, 0o600))
+        .and_then(|()| fs::write(path, grub_pass).map_err(|e| format!("{path}: {e}")))
+        .and_then(|()| {
+            sh_in(
+                "cryptsetup luksAddKey",
+                Command::new("cryptsetup")
+                    .args(["luksAddKey", "--key-slot", "0", "--iter-time", "1000", "--key-file=-", part, path]),
+                &c.passphrase,
+            )
+        });
+    let _ = fs::remove_file(path);
+    res
 }
 
 /// Random key in the initramfs so the passphrase is only asked once.
@@ -837,6 +923,14 @@ fn chroot_mounts() -> Result {
     m("mount dev", &["--rbind", "/dev", &format!("{MNT}/dev")])?;
     m("mount dev", &["--make-rslave", &format!("{MNT}/dev")])?;
     m("mount run", &["-t", "tmpfs", "-o", "mode=0755,nosuid,nodev", "tmpfs", &format!("{MNT}/run")])?;
+    // The image's /etc/resolv.conf points into /run: without the live resolver's files the
+    // chroot has no DNS and dots from GitHub cannot be fetched.
+    let resolve = "/run/systemd/resolve";
+    if Path::new(resolve).is_dir() && fs::create_dir_all(format!("{MNT}{resolve}")).is_ok() {
+        for f in ["stub-resolv.conf", "resolv.conf"] {
+            let _ = fs::copy(format!("{resolve}/{f}"), format!("{MNT}{resolve}/{f}"));
+        }
+    }
     if Path::new("/run/udev").is_dir() {
         let _ = fs::create_dir_all(format!("{MNT}/run/udev"));
         m("mount udev", &["--bind", "/run/udev", &format!("{MNT}/run/udev")])?;
@@ -925,6 +1019,10 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
             if let Err(e) = r {
                 emit("dots", plan_step("boot").0, &format!("uyarı: masaüstü yapılandırması uygulanamadı: {e}"));
             }
+            // The dots ship a Turkish keyboard; the compositor takes its layout from them.
+            if c.xkblayout.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == ',' || ch == '_') {
+                apply_kb_layout(Path::new(&format!("{MNT}/home/{}/.config/hypr", c.username)), &c.xkblayout);
+            }
             Ok(())
         });
 
@@ -939,6 +1037,27 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
         // grub-mkconfig lists the initramfs, so it must come last.
         sh("grub-mkconfig", &mut ch("grub-mkconfig", &["-o", "/boot/grub/grub.cfg"])).map_err(at("boot"))
     })
+}
+
+/// Sets `kb_layout` in every Lua/hyprlang file under `dir`. Runs as root on a user-owned tree,
+/// so symlinks are never followed; rewriting in place keeps the owner.
+fn apply_kb_layout(dir: &Path, layout: &str) {
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        let Ok(meta) = p.symlink_metadata() else { continue };
+        if meta.is_dir() {
+            apply_kb_layout(&p, layout);
+        } else if meta.is_file() {
+            let lua = match p.extension().and_then(|x| x.to_str()) {
+                Some("lua") => true,
+                Some("conf") => false,
+                _ => continue,
+            };
+            if let Some(new) = fs::read_to_string(&p).ok().and_then(|t| set_kb_layout(&t, layout, lua)) {
+                let _ = fs::write(&p, new);
+            }
+        }
+    }
 }
 
 fn grub_install() -> Result {
@@ -1043,11 +1162,6 @@ PATH="/dev/sdd" SIZE="1000" MODEL="Locked" RM="0" TRAN="sata" TYPE="disk" RO="1"
     }
 
     #[test]
-    fn json_escaping() {
-        assert_eq!(json_str("a\"b\\c\n\t\u{1}ş"), "\"a\\\"b\\\\c\\n\\t\\u0001ş\"");
-    }
-
-    #[test]
     fn config_parse_keeps_secrets_verbatim() {
         let c = good();
         assert_eq!(c.password, "p=a ss");
@@ -1143,6 +1257,67 @@ PATH="/dev/sdd" SIZE="1000" MODEL="Locked" RM="0" TRAN="sata" TYPE="disk" RO="1"
     fn groups_filtered() {
         let g = "root:x:0:\nwheel:x:998:\nvideo:x:986:\ninput:x:97:\nusers:x:985:\n";
         assert_eq!(filter_groups(g), ["users", "wheel", "video", "input"]);
+    }
+
+    #[test]
+    fn keyboard_layout_in_dots() {
+        let lua = "hl.config({\n    input = {\n        kb_layout    = \"tr\",\n        follow_mouse = 1,\n    },\n})\n";
+        let out = set_kb_layout(lua, "us", true).unwrap();
+        assert!(out.contains("        kb_layout    = \"us\",\n        follow_mouse = 1,\n"), "{out}");
+        assert_eq!(set_kb_layout(lua, "tr", true), None, "already set");
+        assert_eq!(
+            set_kb_layout("input = { kb_layout = 'tr' }\n-- kb_layout = \"tr\"\n", "de", true).unwrap(),
+            "input = { kb_layout = 'de' }\n-- kb_layout = \"tr\"\n"
+        );
+        // A Lua expression is left alone; so are other keys that merely contain the name.
+        assert_eq!(set_kb_layout("kb_layout = layout,\nmy_kb_layout = \"tr\"\n", "us", true), None);
+        let conf = "input {\r\n    kb_layout = tr\r\n    # kb_layout = xx\n    kb_variant =\n    kb_layout=tr,us\n}";
+        assert_eq!(
+            set_kb_layout(conf, "fr", false).unwrap(),
+            "input {\r\n    kb_layout = fr\r\n    # kb_layout = xx\n    kb_variant =\n    kb_layout=fr\n}"
+        );
+        assert_eq!(set_kb_layout("exec-once = waybar\n", "us", false), None);
+    }
+
+    #[test]
+    fn passphrase_as_grub_reads_it() {
+        for (layout, from, to) in US_KEYS {
+            assert_eq!(from.chars().count(), to.chars().count(), "{layout}");
+            let mut seen: Vec<char> = from.chars().collect();
+            seen.sort();
+            seen.dedup();
+            assert_eq!(seen.len(), from.chars().count(), "{layout}: a key listed twice");
+            assert!(to.is_ascii(), "{layout}");
+        }
+        assert_eq!(grub_passphrase("ci-test-pass", "tr").as_deref(), Some("c'=test=pass"));
+        assert_eq!(grub_passphrase("Şifre ığüşöç.1", "tr").as_deref(), Some(":'fre i[];,./1"));
+        assert_eq!(grub_passphrase("abc XYZ 019", "tr").as_deref(), Some("abc XYZ 019"), "same keys: same text");
+        assert_eq!(grub_passphrase("Zy-ß", "de,us").as_deref(), Some("Yz/-"));
+        assert_eq!(grub_passphrase("azerty1", "fr").as_deref(), Some("qwerty!"));
+        // AltGr characters, unknown layouts and layout variants cannot be translated.
+        assert_eq!(grub_passphrase("a@b", "tr"), None);
+        assert_eq!(grub_passphrase("a<b", "tr"), None);
+        assert_eq!(grub_passphrase("abc", "us"), None);
+        assert_eq!(grub_passphrase("abc", "tr(f)"), None);
+    }
+
+    #[test]
+    fn ui_sends_only_keys_the_backend_reads() {
+        let qml = include_str!("../../../packages/osmium-dots-ii/overlay/.config/quickshell/ii/osmium-installer.qml");
+        let kv = qml.split_once("const kv = {").and_then(|(_, r)| r.split_once('}')).expect("configText() in the QML").0;
+        let keys: Vec<&str> = kv
+            .split([',', '\n'])
+            .filter_map(|pair| pair.split_once(':'))
+            .map(|(k, _)| k.trim())
+            .collect();
+        assert!(keys.len() >= 13, "{keys:?}");
+        for key in keys {
+            // A value no default can equal: the field changes only if parse_config knows the key.
+            let c = parse_config(&format!("{key}=1\n"));
+            let d = parse_config("");
+            let fields = |c: &Config| format!("{c:?}");
+            assert_ne!(fields(&c), fields(&d), "osmium-installer.qml sends `{key}`, which osmium-install ignores");
+        }
     }
 
     #[test]
