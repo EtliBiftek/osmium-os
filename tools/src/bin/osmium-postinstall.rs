@@ -126,6 +126,16 @@ fn postinstall() -> Result {
         .ok_or("no kernel found in /usr/lib/modules")?;
     copy(&vmlinuz, "/boot/vmlinuz-linux")?;
 
+    // The live ISO's RAM tester: mkarchiso moved its /boot files onto the ISO, so the installed
+    // packages would be missing them. The installed system boots without it.
+    let memtest: Vec<&str> = ["memtest86+", "memtest86+-efi"]
+        .into_iter()
+        .filter(|p| succeeds(Command::new("pacman").args(["-Qq", p])))
+        .collect();
+    if !memtest.is_empty() {
+        run(Command::new("pacman").args(["-Rdd", "--noconfirm"]).args(&memtest))?;
+    }
+
     run(Command::new("systemctl").args(["enable", "greetd.service"]))?;
     fs::create_dir_all("/etc/greetd").map_err(|e| format!("/etc/greetd: {e}"))?;
     copy("/usr/share/osmium/greetd.toml", "/etc/greetd/config.toml")?;

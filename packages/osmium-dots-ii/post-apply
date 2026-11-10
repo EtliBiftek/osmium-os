@@ -6,3 +6,8 @@ set -e
 venv="${XDG_STATE_HOME:-$HOME/.local/state}/quickshell/.venv"
 [ -x "$venv/bin/python" ] || python -m venv --system-site-packages --prompt .venv "$venv"
 xdg-user-dirs-update 2>/dev/null || true
+# ii types through ydotoold. Enabled for this user only: a system-wide enable also started it for
+# greetd's greeter, where it fails (no uinput access). A symlink works without a running manager.
+wants="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/default.target.wants"
+mkdir -p "$wants"
+ln -sf /usr/lib/systemd/user/ydotool.service "$wants/ydotool.service"

@@ -70,8 +70,7 @@ package() {
   # ii's system setup (upstream sdata/subcmd-install/2.setups.sh), done the packaged way.
   install -Dm644 /dev/stdin "$pkgdir/usr/lib/modules-load.d/osmium-ii.conf" <<<"i2c-dev"
   install -Dm644 /dev/stdin "$pkgdir/usr/lib/sysusers.d/osmium-ii.conf" <<<"g i2c - -"
-  install -d "$pkgdir/usr/lib/systemd/user/default.target.wants"
-  ln -s /usr/lib/systemd/user/ydotool.service "$pkgdir/usr/lib/systemd/user/default.target.wants/ydotool.service"
+  # ydotool.service is enabled per user by post-apply.
 
   install -Dm644 "$src/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   cp -a "$src/licenses/." "$pkgdir/usr/share/licenses/$pkgname/"

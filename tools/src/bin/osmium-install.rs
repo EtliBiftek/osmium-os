@@ -777,6 +777,13 @@ fn copy_system() -> Result {
         let _ = fs::create_dir_all(format!("{MNT}/boot"));
         fs::copy(&kernel, format!("{MNT}/boot/vmlinuz-linux")).map_err(|e| format!("vmlinuz: {e}"))?;
     }
+    // Microcode images, which mkarchiso also keeps outside the squashfs (owned by *-ucode packages).
+    for img in ["amd-ucode.img", "intel-ucode.img"] {
+        let src = format!("{BOOTMNT}/arch/boot/{img}");
+        if Path::new(&src).is_file() {
+            fs::copy(&src, format!("{MNT}/boot/{img}")).map_err(|e| format!("{img}: {e}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -927,6 +934,8 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
         let _ = join(dots);
         initramfs.map_err(at("boot"))?;
         grub.map_err(at("boot"))?;
+        // First rollback point; before grub-mkconfig so grub-btrfs lists it. Not fatal.
+        succeeds(&mut ch("snapper", &["--no-dbus", "-c", "root", "create", "-d", "Kurulum"]));
         // grub-mkconfig lists the initramfs, so it must come last.
         sh("grub-mkconfig", &mut ch("grub-mkconfig", &["-o", "/boot/grub/grub.cfg"])).map_err(at("boot"))
     })
