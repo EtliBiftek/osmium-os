@@ -172,6 +172,7 @@ jobs:
       - name: Install QEMU
         run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-x86 ovmf swtpm swtpm-tools libarchive-tools socat
       - name: Install from the live ISO
+        id: install
         run: |
           iso=$(ls *.iso)
           bsdtar -xf "$iso" arch/boot/x86_64 loader boot/grub 2>/dev/null || true
@@ -209,6 +210,7 @@ jobs:
           done
           if grep -aq 'OSMIUM-LEFT-' install-*.log; then echo "::warning::the installer left the target disk mounted or open"; fi
       - name: Live desktop and installer window
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           iso=$(ls *.iso)
           params=$(grep -rhom1 'archisobasedir=[^ ]* archisosearchuuid=[^ ]*' loader boot | head -1)
@@ -233,6 +235,7 @@ jobs:
             preview-synthwave.png
           if-no-files-found: ignore
       - name: Boot the plain install (update, bless, broken update, rollback)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           # Reboots are allowed: the test reboots twice itself, and the broken kernel three times.
           sudo env DISK=disk-plain.qcow2 VARS=vars-plain.fd REBOOT=1 MINUTES=25 .github/ci/vm.sh boot-plain.log || true
@@ -250,12 +253,14 @@ jobs:
           need ROLLBACK-OK "a kernel that does not boot was not rolled back"
           need MIX-OK "osmium-dots karistir/apply of a mixed dot failed"
       - name: Boot the install next to Windows
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           sudo env DISK=disk-win.qcow2 VARS=vars-win.fd MINUTES=8 .github/ci/vm.sh boot-win.log || true
           sudo cat boot-win.log | cut -c1-400 || true
           sudo grep -aq OSMIUM-BOOT-OK boot-win.log || { echo "::error::the install next to Windows did not boot"; exit 1; }
           sudo grep -aq OSMIUM-XBOOTLDR-OK boot-win.log || { echo "::error::/boot is not the XBOOTLDR partition"; exit 1; }
       - name: Boot the LUKS install (Secure Boot, then TPM2 unlock)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           tpm() { sudo pkill swtpm || true; sleep 1; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; }
           tpm
