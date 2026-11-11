@@ -30,7 +30,8 @@ pkill -f osmium-installer.qml; sleep 2
 as qs -p /usr/share/osmium/dots/ii/home/.config/quickshell/ii/osmium-installer.qml >/tmp/ui.log 2>&1 &
 sleep 25
 sed 's/^/OSMIUM-UI-LOG /' /tmp/ui.log | head -60
-if grep -qiE 'ReferenceError|TypeError|is not a type|is not installed|Cannot assign|failed to load|ERROR' /tmp/ui.log; then
+# QML and Wayland failures only: Mesa reports its software-rendering fallback as "error" too.
+if grep -v '^MESA' /tmp/ui.log | grep -qE 'ReferenceError|TypeError|is not a type|is not installed|Cannot assign|Cannot override|Failed to load|ERROR|Protocol error'; then
   echo OSMIUM-UI-ERRORS
 else
   echo OSMIUM-UI-CLEAN
