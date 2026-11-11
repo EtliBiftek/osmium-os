@@ -186,7 +186,7 @@ jobs:
             { echo "enc=$1"; echo "win=${6:-0}"; echo "cat > /tmp/boot-test.sh <<'BOOTTEST'"; cat .github/ci/boot-test.sh; echo BOOTTEST
               cat .github/ci/install-body.sh; } > test.img
             truncate -s 1M test.img
-            if [ "$4" = 1 ]; then sudo pkill swtpm; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; fi
+            if [ "$4" = 1 ]; then sudo pkill swtpm || true; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; fi
             sudo env DISK=$2 VARS=$3 SB=$4 .github/ci/vm.sh install-$5.log -cdrom "$iso" \
               -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
               -kernel arch/boot/x86_64/vmlinuz-linux-zen -initrd arch/boot/x86_64/initramfs-linux-zen.img \
@@ -257,7 +257,7 @@ jobs:
           sudo grep -aq OSMIUM-XBOOTLDR-OK boot-win.log || { echo "::error::/boot is not the XBOOTLDR partition"; exit 1; }
       - name: Boot the LUKS install (Secure Boot, then TPM2 unlock)
         run: |
-          tpm() { sudo pkill swtpm; sleep 1; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; }
+          tpm() { sudo pkill swtpm || true; sleep 1; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; }
           tpm
           # First boot: the passphrase comes as a systemd credential; typed keys are the fallback
           # (only letters and digits: the initramfs keymap is Turkish Q).
