@@ -17,9 +17,6 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
    always wipes the whole disk (backend and QML UI).
 5. **Dot preview and mixing**: render a dot in headless hyprland-rust, show a screenshot before
    applying (also in the installer); mix parts of dots (bar from one, colors from another).
-7. **hyprland-rust side of three features** (prompt for the user not written yet): window undo
-   (`Super+Z`, event log), projects (workspace + window layout restore), focus lock (dim and
-   block chosen apps).
 
 ## Half done
 
@@ -29,6 +26,8 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
 
 ## Needs the user (never done by Claude)
 
+- hyprland-rust: window undo, projects, focus lock. Prompt in `docs/hyprland-rust-features.md`;
+  OsmiumOS then adds the binds and Turkish front ends listed at its end.
 - Signing key: secrets `OSMIUM_GPG_PRIVATE_KEY`, `OSMIUM_GPG_KEY_ID` (README "Signing").
   The repo and ISO are unsigned until then.
 - `OSMIUM_DISPATCH_TOKEN` in hyprland-rust plus its `notify-osmium` job, for bumps within a
