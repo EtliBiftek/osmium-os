@@ -324,6 +324,13 @@ fn check() -> Result {
         let def = output(Command::new("btrfs").args(["subvolume", "get-default", "/"]))?;
         new_root = default_subvol_path(&def).and_then(|p| snapshot_mount_path(&p));
     }
+    if let Some(root) = new_root.as_deref().filter(|_| dir.starts_with("/boot")) {
+        // /boot is its own partition here (XBOOTLDR), so the rollback left the update's image
+        // in place. Mark it as dealt with on the root that boots next: otherwise the next
+        // pacman transaction of any kind would install the kernel that just failed again.
+        let d = format!("{root}{STATE}");
+        warn(stamp(Path::new(SRC)).and_then(|s| fs::create_dir_all(&d).and_then(|()| fs::write(format!("{d}/kurulu"), s)).map_err(|e| format!("{d}: {e}"))));
+    }
     place(&dir.join(RESCUE), dir, MAIN)?;
     remove_mains(dir, Some(MAIN))?;
     io(fs::remove_file(dir.join(RESCUE)), &dir.join(RESCUE))?;

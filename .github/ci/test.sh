@@ -52,6 +52,7 @@ booted() {
   # Serial log lines end in CR, so require a unit name, not just any character.
   if has "OSMIUM-FAILED-UNITS [[:alnum:]@_.-]\+" "$1"; then echo "::error::$1: units failed on the installed system"; exit 1; fi
   if has OSMIUM-DEVICE-TIMEOUT "$1"; then echo "::error::$1: the boot waited for a device that never came"; exit 1; fi
+  has 'OSMIUM-BOOT-TITLES.*title: OsmiumOS' "$1" || echo "::warning::$1: the boot menu entry is not titled OsmiumOS"
 }
 
 case $leg in

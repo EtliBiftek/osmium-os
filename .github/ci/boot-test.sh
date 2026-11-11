@@ -14,6 +14,8 @@ checks() {
   journalctl -b --no-pager | grep -m3 'Timed out waiting for device' | sed 's/^/OSMIUM-DEVICE-TIMEOUT /'
   say "FAILED-UNITS $(systemctl --failed --no-legend --plain | tr '\n' ';')"
   say "GREETD $(systemctl is-active greetd)"
+  # The boot menu names the system from the os-release inside the UKI.
+  say "BOOT-TITLES $(bootctl list 2>/dev/null | grep -i 'title:' | tr -s ' ' | tr '\n' ';')"
   journalctl -b -p err --no-pager | tail -40
   [ -d /home/tester/.config/quickshell/ii ] && say DOTS-OK
   # Smoke-run the read-only tools on a real installed system (output only, never fatal).

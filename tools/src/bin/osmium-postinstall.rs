@@ -54,10 +54,35 @@ fn main() {
 /// file is removed above. Builds the UKI osmium-boot installs (/boot/osmium.efi, with
 /// /etc/kernel/cmdline) and keeps the plain initramfs next to the kernel. No fallback image: it
 /// doubles build time; osmium-boot's rescue copy and snapper rollback are the rescue path.
+/// The UKI carries BOOT_OS_RELEASE, which is where systemd-boot takes the menu title from.
 fn preset(pkgbase: &str) -> String {
     format!(
-        "ALL_kver='/boot/vmlinuz-{pkgbase}'\nPRESETS=('default')\ndefault_image='/boot/initramfs-{pkgbase}.img'\ndefault_uki='/boot/osmium.efi'\n"
+        "ALL_kver='/boot/vmlinuz-{pkgbase}'\nPRESETS=('default')\ndefault_image='/boot/initramfs-{pkgbase}.img'\ndefault_uki='/boot/osmium.efi'\ndefault_options='--osrelease {BOOT_OS_RELEASE}'\n"
     )
+}
+
+/// The os-release embedded in the UKI (see `boot_os_release`).
+const BOOT_OS_RELEASE: &str = "/etc/osmium/os-release";
+
+/// The system's os-release under our name. Only for the boot menu, where the entry otherwise
+/// reads "Arch Linux" (next to "Windows Boot Manager" on a shared disk). `ID` and the rest stay
+/// Arch's: systemd-boot sorts entries by them, and the system itself keeps /etc/os-release.
+fn boot_os_release(system: &str) -> String {
+    let mut out = String::new();
+    for line in system.lines() {
+        match line.split_once('=').map(|(k, _)| k) {
+            Some("NAME") => out += "NAME=\"OsmiumOS\"\n",
+            Some("PRETTY_NAME") => out += "PRETTY_NAME=\"OsmiumOS\"\n",
+            _ => {
+                out += line;
+                out.push('\n');
+            }
+        }
+    }
+    if !out.lines().any(|l| l.starts_with("PRETTY_NAME=")) {
+        out += "PRETTY_NAME=\"OsmiumOS\"\n";
+    }
+    out
 }
 
 /// Fast initramfs: zstd level 1 on all cores (conf.d is read after mkinitcpio.conf).
@@ -95,6 +120,9 @@ fn postinstall() -> Result {
     // Kernel image for initcpio and the bootloader (the live ISO keeps it outside the squashfs).
     let (pkgbase, vmlinuz) = kernel()?;
     write(&format!("/etc/mkinitcpio.d/{pkgbase}.preset"), &preset(&pkgbase))?;
+    let os_release = fs::read_to_string("/etc/os-release").or_else(|_| fs::read_to_string("/usr/lib/os-release")).unwrap_or_default();
+    fs::create_dir_all("/etc/osmium").map_err(|e| format!("/etc/osmium: {e}"))?;
+    write(BOOT_OS_RELEASE, &boot_os_release(&os_release))?;
     fs::create_dir_all("/etc/mkinitcpio.conf.d").map_err(|e| format!("/etc/mkinitcpio.conf.d: {e}"))?;
     write("/etc/mkinitcpio.conf.d/00-osmium-compress.conf", INITCPIO_COMPRESS)?;
     let mirrors = fs::read_to_string("/etc/pacman.d/mirrorlist").unwrap_or_default();
@@ -240,9 +268,20 @@ mod tests {
         assert!(p.contains("PRESETS=('default')") && !p.contains("fallback"));
         assert!(p.contains("ALL_kver='/boot/vmlinuz-linux-zen'") && p.contains("'/boot/initramfs-linux-zen.img'"));
         assert!(p.contains("default_uki='/boot/osmium.efi'"));
+        assert!(p.contains("default_options='--osrelease /etc/osmium/os-release'"));
         assert!(valid_pkgbase("linux-zen") && valid_pkgbase("linux"));
         assert!(!valid_pkgbase("") && !valid_pkgbase("linux/../x") && !valid_pkgbase("zen"));
         assert!(INITCPIO_COMPRESS.contains("zstd") && INITCPIO_COMPRESS.contains("-T0"));
+    }
+
+    #[test]
+    fn boot_menu_says_osmium() {
+        let arch = "NAME=\"Arch Linux\"\nPRETTY_NAME=\"Arch Linux\"\nID=arch\nBUILD_ID=rolling\nANSI_COLOR=\"38;2;23;147;209\"\n";
+        assert_eq!(
+            boot_os_release(arch),
+            "NAME=\"OsmiumOS\"\nPRETTY_NAME=\"OsmiumOS\"\nID=arch\nBUILD_ID=rolling\nANSI_COLOR=\"38;2;23;147;209\"\n"
+        );
+        assert_eq!(boot_os_release(""), "PRETTY_NAME=\"OsmiumOS\"\n");
     }
 
     #[test]
