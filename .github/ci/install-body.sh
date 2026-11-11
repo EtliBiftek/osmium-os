@@ -7,7 +7,7 @@ if [ "$win" = 1 ]; then
   # A stand-in for a Windows disk: ESP with Windows Boot Manager, MSR, NTFS, recovery.
   sgdisk --zap-all -n1:0:+100MiB -t1:ef00 -n2:0:+16MiB -t2:0c01 -n3:0:-700MiB -t3:0700 -n4:0:0 -t4:2700 "$disk"
   partprobe "$disk"; udevadm settle
-  mkfs.fat -F32 "${disk}1" && mkdir -p /tmp/w && mount "${disk}1" /tmp/w \
+  mkfs.fat -F32 "${disk}1" && mkdir -p /tmp/w && mount -t vfat "${disk}1" /tmp/w \
     && mkdir -p /tmp/w/EFI/Microsoft/Boot && echo fake > /tmp/w/EFI/Microsoft/Boot/bootmgfw.efi && umount /tmp/w
   mkntfs -Q -L Windows "${disk}3" && ntfs-3g "${disk}3" /tmp/w && echo merhaba > /tmp/w/belge.txt && umount /tmp/w
   mkntfs -Q -L Recovery "${disk}4"
@@ -36,7 +36,7 @@ if [ "$win" = 1 ]; then
   lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,LABEL "$disk"
   # ntfscat ignores the "check at next Windows boot" flag ntfsresize leaves.
   ntfscat "${disk}3" belge.txt | grep -q merhaba && echo OSMIUM-WINDOWS-INTACT
-  mount "${disk}1" /tmp/e && [ -s /tmp/e/EFI/Microsoft/Boot/bootmgfw.efi ] && [ -s /tmp/e/EFI/systemd/systemd-bootx64.efi ] \
+  mount -t vfat "${disk}1" /tmp/e && [ -s /tmp/e/EFI/Microsoft/Boot/bootmgfw.efi ] && [ -s /tmp/e/EFI/systemd/systemd-bootx64.efi ] \
     && grep -q "timeout 3" /tmp/e/loader/loader.conf && echo OSMIUM-ESP-SHARED-OK; umount /tmp/e
   esp="${disk}5"
 fi
@@ -46,7 +46,7 @@ if [ "$enc" = 1 ]; then
 fi
 # No subvol=: the root is the default subvolume.
 mount "$dev" /tmp/r || { echo OSMIUM-INSTALL-FAILED; poweroff -f; sleep 60; }
-mount "$esp" /tmp/e
+mount -t vfat "$esp" /tmp/e
 ls -R /tmp/e | head -30
 cat /tmp/r/etc/fstab /tmp/r/etc/kernel/cmdline /tmp/e/loader/loader.conf 2>/dev/null
 if [ "$win" = 1 ]; then

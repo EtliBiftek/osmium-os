@@ -1260,7 +1260,7 @@ fn probe_windows(disk: &str) -> Option<Windows> {
 /// Windows Boot Manager on an ESP, looked at read-only.
 fn windows_esp(dev: &str) -> bool {
     let dir = "/run/osmium-install-esp";
-    if fs::create_dir_all(dir).is_err() || !succeeds(Command::new("mount").args(["-o", "ro", dev, dir])) {
+    if fs::create_dir_all(dir).is_err() || !succeeds(Command::new("mount").args(["-t", "vfat", "-o", "ro", dev, dir])) {
         return false;
     }
     let found = ["EFI/Microsoft/Boot/bootmgfw.efi", "EFI/MICROSOFT/BOOT/BOOTMGFW.EFI"].iter().any(|f| Path::new(dir).join(f).is_file());
