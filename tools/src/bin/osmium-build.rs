@@ -312,8 +312,12 @@ fn import_pgp_keys(dir: &Path) -> Result {
     if keys.is_empty() {
         return Ok(());
     }
-    for server in ["hkps://keyserver.ubuntu.com", "hkps://keys.openpgp.org"] {
-        if succeeds(Command::new("sudo").args(["-u", "builder", "gpg", "--batch", "--keyserver", server, "--recv-keys"]).args(&keys)) {
+    // Keyservers fail now and then: two rounds over three servers, each try time-limited.
+    let servers = ["hkps://keyserver.ubuntu.com", "hkps://keys.openpgp.org", "hkps://pgp.surf.nl"];
+    for server in servers.iter().chain(servers.iter()) {
+        let mut gpg = Command::new("sudo");
+        gpg.args(["-u", "builder", "timeout", "90", "gpg", "--batch", "--keyserver", server, "--recv-keys"]).args(&keys);
+        if succeeds(&mut gpg) {
             return Ok(());
         }
     }
@@ -432,6 +436,14 @@ fn parse_marker(text: &str) -> Option<Vec<String>> {
 
 /// Downloads the named packages (and their signatures, where published) into `out`.
 /// False, with nothing left behind, unless all of them are there.
+/// curl for release downloads: a stalled transfer (under 1 KB/s for a minute) is retried
+/// instead of blocking the build (one once hung for 28 minutes).
+fn curl() -> Command {
+    let mut c = Command::new("curl");
+    c.args(["-fsL", "--connect-timeout", "20", "--speed-limit", "1024", "--speed-time", "60", "--retry", "3", "--retry-all-errors"]);
+    c
+}
+
 fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Result<bool> {
     let mut got = Vec::new();
     let mut all = true;
@@ -439,14 +451,14 @@ fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Res
         let dest = out.join(name);
         let url = format!("{}/{name}", repo_url());
         got.push(dest.clone());
-        if !succeeds(Command::new("curl").args(["-fsL", "--retry", "2", "-o"]).arg(&dest).arg(&url)) {
+        if !succeeds(curl().arg("-o").arg(&dest).arg(&url)) {
             all = false;
             break;
         }
         // Reuse its signature if one was published; otherwise it gets signed in packages().
         let sig = sig_path(&dest);
         got.push(sig.clone());
-        if !succeeds(Command::new("curl").arg("-fsL").arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
+        if !succeeds(curl().arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
             remove_file(&sig)?;
         }
     }
@@ -469,7 +481,7 @@ fn build(root: &Path, dir: &Path, out: &Path, flags: &str, marker: Option<&str>,
     let published = if std::env::var("OSMIUM_REPO").is_err() {
         None
     } else if let Some(marker) = marker {
-        output(Command::new("curl").args(["-fsL", "--retry", "2"]).arg(format!("{}/{marker}", repo_url())))
+        output(curl().arg(format!("{}/{marker}", repo_url())))
             .ok()
             .and_then(|text| parse_marker(&text))
     } else {
