@@ -50,13 +50,12 @@ fn main() {
     }
 }
 
-/// Replaces releng's archiso-only preset, whose config file is removed above.
-/// No fallback image: it doubles initramfs build time; grub-btrfs snapshots are the rescue path.
-const LINUX_PRESET: &str = "\
-ALL_kver='/boot/vmlinuz-linux'
-PRESETS=('default')
-default_image='/boot/initramfs-linux.img'
-";
+/// Replaces releng's archiso-only preset of kernel package `pkgbase` (linux-zen), whose config
+/// file is removed above. No fallback image: it doubles initramfs build time; grub-btrfs
+/// snapshots are the rescue path.
+fn preset(pkgbase: &str) -> String {
+    format!("ALL_kver='/boot/vmlinuz-{pkgbase}'\nPRESETS=('default')\ndefault_image='/boot/initramfs-{pkgbase}.img'\n")
+}
 
 /// Fast initramfs: zstd level 1 on all cores (conf.d is read after mkinitcpio.conf).
 const INITCPIO_COMPRESS: &str = "\
@@ -90,7 +89,9 @@ fn postinstall() -> Result {
     // Units removed above leave dangling enable symlinks.
     remove_dangling_links(Path::new("/etc/systemd/system"))?;
 
-    write("/etc/mkinitcpio.d/linux.preset", LINUX_PRESET)?;
+    // Kernel image for initcpio and the bootloader (the live ISO keeps it outside the squashfs).
+    let (pkgbase, vmlinuz) = kernel()?;
+    write(&format!("/etc/mkinitcpio.d/{pkgbase}.preset"), &preset(&pkgbase))?;
     fs::create_dir_all("/etc/mkinitcpio.conf.d").map_err(|e| format!("/etc/mkinitcpio.conf.d: {e}"))?;
     write("/etc/mkinitcpio.conf.d/00-osmium-compress.conf", INITCPIO_COMPRESS)?;
     let mirrors = fs::read_to_string("/etc/pacman.d/mirrorlist").unwrap_or_default();
@@ -118,13 +119,7 @@ fn postinstall() -> Result {
         append("/etc/pacman.conf", &osmium_repo_section(REPO_URL, signed))?;
     }
 
-    // Kernel image for initcpio and the bootloader (the live ISO keeps it outside the squashfs).
-    let vmlinuz = fs::read_dir("/usr/lib/modules")
-        .map_err(|e| format!("/usr/lib/modules: {e}"))?
-        .filter_map(|e| e.ok().map(|e| e.path().join("vmlinuz")))
-        .find(|p| p.is_file())
-        .ok_or("no kernel found in /usr/lib/modules")?;
-    copy(&vmlinuz, "/boot/vmlinuz-linux")?;
+    copy(&vmlinuz, format!("/boot/vmlinuz-{pkgbase}"))?;
 
     // The live ISO's RAM tester: mkarchiso moved its /boot files onto the ISO, so the installed
     // packages would be missing them. The installed system boots without it.
@@ -208,6 +203,23 @@ fn remove_dangling_links(dir: &Path) -> Result {
     Ok(())
 }
 
+/// The installed kernel: its package name (`pkgbase` file) and its image under /usr/lib/modules.
+fn kernel() -> Result<(String, std::path::PathBuf)> {
+    for e in fs::read_dir("/usr/lib/modules").map_err(|e| format!("/usr/lib/modules: {e}"))?.flatten() {
+        let (image, base) = (e.path().join("vmlinuz"), e.path().join("pkgbase"));
+        let pkgbase = fs::read_to_string(&base).unwrap_or_default().trim().to_string();
+        if image.is_file() && valid_pkgbase(&pkgbase) {
+            return Ok((pkgbase, image));
+        }
+    }
+    Err("no kernel found in /usr/lib/modules".into())
+}
+
+/// The name becomes part of /boot and /etc paths.
+fn valid_pkgbase(s: &str) -> bool {
+    s.starts_with("linux") && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,8 +232,12 @@ mod tests {
 
     #[test]
     fn preset_is_not_archiso() {
-        assert!(!LINUX_PRESET.contains("archiso"));
-        assert!(LINUX_PRESET.contains("PRESETS=('default')") && !LINUX_PRESET.contains("fallback"));
+        let p = preset("linux-zen");
+        assert!(!p.contains("archiso"));
+        assert!(p.contains("PRESETS=('default')") && !p.contains("fallback"));
+        assert!(p.contains("ALL_kver='/boot/vmlinuz-linux-zen'") && p.contains("'/boot/initramfs-linux-zen.img'"));
+        assert!(valid_pkgbase("linux-zen") && valid_pkgbase("linux"));
+        assert!(!valid_pkgbase("") && !valid_pkgbase("linux/../x") && !valid_pkgbase("zen"));
         assert!(INITCPIO_COMPRESS.contains("zstd") && INITCPIO_COMPRESS.contains("-T0"));
     }
 

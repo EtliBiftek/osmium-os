@@ -176,7 +176,7 @@ jobs:
             # The encrypted install is only checked for a root that unlocks and mounts.
             dev=/dev/mapper/citest
             printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest || dev=/dev/mapper/cryptroot
-            mount -o ro,subvol=@ "$dev" /tmp/r && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux.img ] \
+            mount -o ro,subvol=@ "$dev" /tmp/r && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux-zen.img ] \
               && echo OSMIUM-LUKS-OK
             # GRUB reads the passphrase with a US keymap: slot 0 holds what the same keys type there (tr).
             printf "c'=test=pass" | cryptsetup open --test-passphrase --key-slot 0 --key-file=- "${disk}2" && echo OSMIUM-GRUBKEY-OK
@@ -229,7 +229,7 @@ jobs:
             truncate -s 1M test.img
             sudo ./vm.sh install-$enc.log -cdrom "$iso" \
               -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
-              -kernel arch/boot/x86_64/vmlinuz-linux -initrd arch/boot/x86_64/initramfs-linux.img \
+              -kernel arch/boot/x86_64/vmlinuz-linux-zen -initrd arch/boot/x86_64/initramfs-linux-zen.img \
               -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
             grep -a 'OSMIUM-' install-$enc.log | grep -av '"step":"copy"' | cut -c1-400 || true
           done

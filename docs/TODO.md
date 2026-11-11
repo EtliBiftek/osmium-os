@@ -17,8 +17,6 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
    always wipes the whole disk (backend and QML UI).
 5. **Dot preview and mixing**: render a dot in headless hyprland-rust, show a screenshot before
    applying (also in the installer); mix parts of dots (bar from one, colors from another).
-6. **Kernel switch to `linux-zen`** (decided, not done). Touches `packages.x86_64`, the
-   installer/postinstall preset (`/boot/vmlinuz-linux` is hard-coded), `osmium-hw` headers.
 7. **hyprland-rust side of three features** (prompt for the user not written yet): window undo
    (`Super+Z`, event log), projects (workspace + window layout restore), focus lock (dim and
    block chosen apps).

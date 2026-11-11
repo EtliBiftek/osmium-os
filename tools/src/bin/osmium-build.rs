@@ -66,6 +66,45 @@ fn read(path: &Path) -> Result<String> {
     io(fs::read_to_string(path), path)
 }
 
+/// OsmiumOS kernel, for the live ISO and therefore the installed system (the installer copies
+/// the live root). Its headers come from osmium-hw, which reads the installed pkgbase.
+const KERNEL: &str = "linux-zen";
+
+/// releng's package list with `linux` replaced by KERNEL.
+fn kernel_packages(list: &str) -> String {
+    list.lines().map(|l| if l.trim() == "linux" { KERNEL } else { l }).map(|l| format!("{l}\n")).collect()
+}
+
+/// A releng boot menu (grub, systemd-boot, syslinux) pointed at KERNEL's image and initramfs.
+fn kernel_boot_config(text: &str) -> String {
+    if text.contains(&format!("vmlinuz-{KERNEL}")) {
+        return text.to_string();
+    }
+    text.replace("vmlinuz-linux", &format!("vmlinuz-{KERNEL}"))
+        .replace("initramfs-linux.img", &format!("initramfs-{KERNEL}.img"))
+}
+
+/// Swaps releng's `linux` for KERNEL in the package list and in every boot menu.
+fn use_kernel(profile: &Path) -> Result {
+    let list = profile.join("packages.x86_64");
+    io(fs::write(&list, kernel_packages(&read(&list)?)), &list)?;
+    let mut dirs: Vec<PathBuf> = ["grub", "efiboot", "syslinux"].iter().map(|d| profile.join(d)).collect();
+    while let Some(dir) = dirs.pop() {
+        for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(text) = fs::read_to_string(&path) {
+                let new = kernel_boot_config(&text);
+                if new != text {
+                    io(fs::write(&path, new), &path)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// releng's live initramfs HOOKS line without `microcode`: mkarchiso then puts the ucode images
 /// next to the kernel, where osmium-install finds them (see common/.../archiso.conf).
 fn live_hooks(releng: &str) -> Option<String> {
@@ -101,6 +140,7 @@ fn iso(root: &Path, edition: &str) -> Result {
     // Our file replaces releng's; its HOOKS follow releng's, so archiso changes need no edit here.
     let ours = read(&initcpio)?;
     io(fs::write(&initcpio, format!("{hooks}\n{ours}")), &initcpio)?;
+    use_kernel(&profile)?;
     let key = public_key(root);
     if let Some(key) = &key {
         // pacstrap uses the build host's keyring.
@@ -492,6 +532,20 @@ fn sig_path(pkg: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_is_swapped() {
+        assert_eq!(kernel_packages("base\nlinux\nlinux-firmware\n"), "base\nlinux-zen\nlinux-firmware\n");
+        let entry = "linux    /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux\ninitrd   /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img\n";
+        let zen = kernel_boot_config(entry);
+        assert_eq!(
+            zen,
+            "linux    /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux-zen\ninitrd   /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux-zen.img\n"
+        );
+        assert_eq!(kernel_boot_config(&zen), zen, "idempotent");
+        let memtest = "linux /boot/memtest86+/memtest.efi\n";
+        assert_eq!(kernel_boot_config(memtest), memtest);
+    }
 
     #[test]
     fn live_hooks_follow_releng() {

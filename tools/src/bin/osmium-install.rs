@@ -857,11 +857,15 @@ fn copy_system() -> Result {
             Command::new("rsync").args(["-aHAX", "--numeric-ids", &format!("{LIVE_ROOT}/"), &format!("{MNT}/")]),
         )?;
     }
-    // The ISO keeps the kernel outside the squashfs. postinstall also does this; harmless duplicate.
-    let kernel = format!("{BOOTMNT}/arch/boot/x86_64/vmlinuz-linux");
-    if Path::new(&kernel).is_file() {
-        let _ = fs::create_dir_all(format!("{MNT}/boot"));
-        fs::copy(&kernel, format!("{MNT}/boot/vmlinuz-linux")).map_err(|e| format!("vmlinuz: {e}"))?;
+    // The ISO keeps the kernel (vmlinuz-linux-zen) outside the squashfs. postinstall also does
+    // this; harmless duplicate.
+    let boot = format!("{BOOTMNT}/arch/boot/x86_64");
+    for e in fs::read_dir(&boot).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("vmlinuz-") {
+            let _ = fs::create_dir_all(format!("{MNT}/boot"));
+            fs::copy(e.path(), format!("{MNT}/boot/{name}")).map_err(|e| format!("{name}: {e}"))?;
+        }
     }
     // Microcode images, which mkarchiso also keeps outside the squashfs (owned by *-ucode packages).
     for img in ["amd-ucode.img", "intel-ucode.img"] {
