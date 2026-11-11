@@ -434,16 +434,22 @@ fn parse_marker(text: &str) -> Option<Vec<String>> {
     (!names.is_empty() && names.iter().all(ok)).then_some(names)
 }
 
-/// Downloads the named packages (and their signatures, where published) into `out`.
-/// False, with nothing left behind, unless all of them are there.
 /// curl for release downloads: a stalled transfer (under 1 KB/s for a minute) is retried
-/// instead of blocking the build (one once hung for 28 minutes).
+/// instead of blocking the build (one once hung for 28 minutes). Only what can get better is
+/// retried (timeouts, refused connections, 408/429/5xx): "not there" is an answer, and with
+/// `--retry-all-errors` each missing `.sig` or `.built` file cost three retries (7 s a package,
+/// 3 minutes a build).
 fn curl() -> Command {
     let mut c = Command::new("curl");
-    c.args(["-fsL", "--connect-timeout", "20", "--speed-limit", "1024", "--speed-time", "60", "--retry", "3", "--retry-all-errors"]);
+    c.args(CURL_ARGS);
     c
 }
 
+const CURL_ARGS: [&str; 10] =
+    ["-fsL", "--connect-timeout", "20", "--speed-limit", "1024", "--speed-time", "60", "--retry", "3", "--retry-connrefused"];
+
+/// Downloads the named packages (and their signatures, where published) into `out`.
+/// False, with nothing left behind, unless all of them are there.
 fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Result<bool> {
     let mut got = Vec::new();
     let mut all = true;
@@ -535,6 +541,11 @@ fn sig_path(pkg: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_file_is_not_retried() {
+        assert!(CURL_ARGS.contains(&"--retry") && !CURL_ARGS.contains(&"--retry-all-errors"));
+    }
 
     #[test]
     fn kernel_is_swapped() {
