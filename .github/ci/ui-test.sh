@@ -38,10 +38,11 @@ fi
 # Starting the installer must not take the ii shell down (shared global shortcuts once did).
 pgrep -f 'qs -c ii' >/dev/null && echo OSMIUM-UI-SHELL-ALIVE
 pkill -f 'qs -p' ; sleep 2
-as grim /tmp/s.png && echo "OSMIUM-SCREENSHOT $(base64 -w0 /tmp/s.png)"
+# Images go to ttyS1: the console on ttyS0 interleaves systemd's status lines with long lines.
+as grim /tmp/s.png && { echo "OSMIUM-SCREENSHOT $(base64 -w0 /tmp/s.png)"; } >/dev/ttyS1
 # Dot preview: synthwave nested in a window, screenshotted from inside.
 as osmium-dots onizle synthwave --png /tmp/p.png --sure 20 2>&1 | sed 's/^/OSMIUM-PREVIEW-LOG /'
-[ -s /tmp/p.png ] && echo "OSMIUM-PREVIEW $(base64 -w0 /tmp/p.png)"
+[ -s /tmp/p.png ] && { echo "OSMIUM-PREVIEW $(base64 -w0 /tmp/p.png)"; } >/dev/ttyS1
 tail -20 "$rt/hyprland-rust.log" | sed 's/^/OSMIUM-HR /'
 poweroff -f
 sleep 60

@@ -1,5 +1,6 @@
 #!/bin/sh
-# vm.sh <log> [extra qemu args]: one QEMU run of the test machine; serial output goes to <log>.
+# vm.sh <log> [extra qemu args]: one QEMU run of the test machine; serial output goes to <log>,
+# a second serial port (guest ttyS1, nothing else writes there) to <log>.data for binary data.
 # Env: DISK (qcow2), VARS (UEFI variables), SB=1 (Secure Boot firmware + swtpm on tpm.sock),
 #      REBOOT=1 (let the guest reboot instead of exiting), MINUTES (timeout, default 20).
 log=$1; shift
@@ -15,4 +16,5 @@ fi
 [ "${REBOOT:-0}" = 1 ] || set -- -no-reboot "$@"
 exec timeout "${MINUTES:-20}m" qemu-system-x86_64 -enable-kvm -cpu host -m 6G -smp 4 -display none \
   -drive if=pflash,format=raw,readonly=on,file=$code -drive if=pflash,format=raw,file="$VARS" \
-  -nic user,model=virtio-net-pci -monitor unix:mon.sock,server,nowait -serial "file:$log" "$@"
+  -nic user,model=virtio-net-pci -monitor unix:mon.sock,server,nowait -serial "file:$log" \
+  -chardev file,id=data,path="$log.data" -device isa-serial,chardev=data "$@"

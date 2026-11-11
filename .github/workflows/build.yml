@@ -221,8 +221,8 @@ jobs:
             -kernel arch/boot/x86_64/vmlinuz-linux-zen -initrd arch/boot/x86_64/initramfs-linux-zen.img \
             -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
           sudo grep -a 'OSMIUM-' ui.log | grep -av SCREENSHOT | cut -c1-400 || true
-          sudo grep -ao 'OSMIUM-SCREENSHOT [A-Za-z0-9+/=]*' ui.log | head -1 | cut -d' ' -f2 | base64 -d > installer.png || true
-          sudo grep -ao 'OSMIUM-PREVIEW [A-Za-z0-9+/=]*' ui.log | head -1 | cut -d' ' -f2 | base64 -d > preview-synthwave.png || true
+          sudo grep -ao 'OSMIUM-SCREENSHOT [A-Za-z0-9+/=]*' ui.log.data | head -1 | cut -d' ' -f2 | base64 -d > installer.png || true
+          sudo grep -ao 'OSMIUM-PREVIEW [A-Za-z0-9+/=]*' ui.log.data | head -1 | cut -d' ' -f2 | base64 -d > preview-synthwave.png || true
           [ -s preview-synthwave.png ] || echo "::warning::osmium-dots onizle made no screenshot in the live desktop"
           sudo grep -aq OSMIUM-UI-RUNNING ui.log || { echo "::error::the installer window did not start in the live desktop"; exit 1; }
           sudo grep -aq OSMIUM-UI-CLEAN ui.log || { echo "::error::the installer QML logged errors (see OSMIUM-UI-LOG lines)"; exit 1; }
