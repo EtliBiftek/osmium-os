@@ -296,3 +296,56 @@ jobs:
             boot-*.log
             ui.log
             screen.ppm
+
+  # Publishes the tested ISO as a GitHub release (main only, after every install and boot test
+  # passed). Release files must be under 2 GiB, so the ISO is split into parts with checksums.
+  release:
+    needs: [iso, install-test]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: osmiumos-hyprland
+      - name: Publish the ISO
+        shell: bash
+        run: |
+          set -euo pipefail
+          iso=$(ls *.iso)
+          tag="iso-$(date -u +%Y.%m.%d)-${GITHUB_RUN_NUMBER}"
+          sha256sum "$iso" > "$iso.sha256"
+          size=$(stat -c %s "$iso")
+          if [ "$size" -lt 2000000000 ]; then
+            files=("$iso" "$iso.sha256")
+            join_text="Tek dosya: \`$iso\`."
+          else
+            split -b 1900M -d -a 2 "$iso" "$iso.part"
+            files=("$iso".part* "$iso.sha256")
+            parts=$(ls "$iso".part* | tr '\n' ' ')
+            join_text="GitHub 2 GiB'tan büyük dosya kabul etmediği için ISO parçalara bölündü. Hepsini indirip birleştirin:
+
+          - Linux/macOS: \`cat $iso.part* > $iso\`
+          - Windows (cmd): \`copy /b $(ls "$iso".part* | tr '\n' '+' | sed 's/+$//') $iso\`
+
+          Parçalar: $parts"
+          fi
+          cat > notes.md <<NOTES
+          OsmiumOS Hyprland canlı ISO'su, \`$GITHUB_SHA\` commit'inden (build #$GITHUB_RUN_NUMBER). Paketler, kurulum (şifreli, şifresiz, Windows'un yanına) ve açılış testleri QEMU'da geçti.
+
+          $join_text
+
+          Doğrulama: \`sha256sum -c $iso.sha256\` (Windows: \`certutil -hashfile $iso SHA256\`).
+
+          - USB'ye yazmak için: \`sudo dd if=$iso of=/dev/sdX bs=4M status=progress\` ya da Ventoy / Rufus (DD modu).
+          - ISO imzasız: açmak için UEFI ayarlarında Secure Boot'u kapatın. Kurulumdan sonra Güvenli Önyükleme ve parolasız (TPM) disk açılışı için: \`sudo osmium-boot guvenli\`.
+          - Yalnızca UEFI. Gerçek donanımda henüz az denendi: kurulumdan önce yedek alın.
+          NOTES
+          sed -i 's/^          //' notes.md
+          gh release create "$tag" "${files[@]}" -R "$GITHUB_REPOSITORY" --title "OsmiumOS $(date -u +%Y.%m.%d) (#$GITHUB_RUN_NUMBER)" --notes-file notes.md --latest
+          # Keep the three newest ISO releases (the package repo release `repo` is not touched).
+          gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt -q '.[] | select(.tagName | startswith("iso-")) | .tagName' \
+            | tail -n +4 | while read -r old; do gh release delete "$old" -R "$GITHUB_REPOSITORY" --cleanup-tag -y; done

@@ -4,7 +4,10 @@ Arch Linux based distribution with a Hyprland desktop (running hyprland-rust).
 
 ## Build
 
-GitHub Actions builds the ISO on every push to `main`. Download it from the run's artifacts.
+GitHub Actions builds the ISO on every push to `main`. Once every install and boot test passed, it
+is published under [Releases](https://github.com/EtliBiftek/osmium-os/releases) (`iso-<date>-<run>`,
+split into parts under GitHub's 2 GiB limit, with the joining steps and a SHA-256 checksum; the
+three newest are kept). Branch builds keep the ISO as a run artifact only.
 Packages whose inputs did not change are reused from the published repo instead of being rebuilt.
 
 Local build on Arch (as root):
