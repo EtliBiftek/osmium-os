@@ -36,6 +36,13 @@ if grep -v '^MESA' /tmp/ui.log | grep -qE 'ReferenceError|TypeError|is not a typ
 else
   echo OSMIUM-UI-CLEAN
 fi
+# Click-through: the installer's self-test walks all pages and prints the config it would send.
+pkill -f 'qs -p' ; sleep 2
+as env OSMIUM_INSTALLER_SELFTEST=1 timeout 90 qs -p /usr/share/osmium/dots/ii/home/.config/quickshell/ii/osmium-installer.qml >/tmp/st.log 2>&1
+grep -o 'OSMIUM-SELFTEST.*' /tmp/st.log | sed 's/^/OSMIUM-UI-/'
+if [ "$(grep -c 'OSMIUM-SELFTEST page [0-9] .* ok$' /tmp/st.log)" = 6 ] && grep -q 'OSMIUM-SELFTEST problem ""' /tmp/st.log; then
+  echo OSMIUM-UI-SELFTEST-OK
+fi
 # Starting the installer must not take the ii shell down (shared global shortcuts once did).
 pgrep -f 'qs -c ii' >/dev/null && echo OSMIUM-UI-SHELL-ALIVE
 pkill -f 'qs -p' ; sleep 2

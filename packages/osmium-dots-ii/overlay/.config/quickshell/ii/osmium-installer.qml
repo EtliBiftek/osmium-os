@@ -123,10 +123,65 @@ ApplicationWindow {
         return gb >= 1000 ? (gb / 1000).toFixed(1) + " TB" : gb.toFixed(0) + " GB"
     }
 
+    // The wallpaper colors ii generated, read here directly: ii's MaterialThemeLoader singleton
+    // also registers the "toggleLightDark" global shortcut, which the running ii shell already
+    // holds, and the compositor answers a second registration with a fatal protocol error.
+    // Without the file (first boot of the live ISO) ii's default palette stays.
+    function applyColors(fileContent) {
+        let json
+        try { json = JSON.parse(fileContent) } catch (e) { return }
+        for (const key in json) {
+            const m3Key = "m3" + key.replace(/_([a-z])/g, g => g[1].toUpperCase())
+            Appearance.m3colors[m3Key] = json[key]
+        }
+        Appearance.m3colors.darkmode = Appearance.m3colors.m3background.hslLightness < 0.5
+    }
+    FileView {
+        id: themeFile
+        path: Qt.resolvedUrl(Directories.generatedMaterialThemePath)
+        watchChanges: true
+        // As ii does it: `loaded` changes once; later edits are read after the reload settles.
+        onLoadedChanged: if (loaded) root.applyColors(text())
+        onFileChanged: {
+            reload()
+            themeReread.restart()
+        }
+    }
+    Timer {
+        id: themeReread
+        interval: 100
+        onTriggered: root.applyColors(themeFile.text())
+    }
+
+    // CI self-test (OSMIUM_INSTALLER_SELFTEST=1): walks every page as the Next button does,
+    // checks each one loads, fills a sample config and prints what would be sent, then quits.
+    // Nothing is installed: the install page's button is never pressed.
+    Timer {
+        id: selfTest
+        property int step: 0
+        interval: 1500
+        repeat: true
+        running: Quickshell.env("OSMIUM_INSTALLER_SELFTEST") === "1"
+        onTriggered: {
+            const ok = pageLoader.status === Loader.Ready && pageLoader.item !== null
+            console.log(`OSMIUM-SELFTEST page ${root.currentPage} ${root.pages[root.currentPage].name} ${ok ? "ok" : "FAILED"}`)
+            if (root.currentPage < root.pages.length - 1) {
+                root.currentPage++
+                return
+            }
+            if (root.disks.length > 0) root.disk = root.disks[0].path
+            root.fullname = "Deneme Kullanıcı"
+            root.username = root.userFromName(root.fullname)
+            root.password = root.password2 = "deneme"
+            console.log(`OSMIUM-SELFTEST problem "${root.problem()}"`)
+            console.log("OSMIUM-SELFTEST config " + root.configText().replace(/(password|passphrase)=[^\n]*/g, "$1=***").replace(/\n/g, " "))
+            console.log(`OSMIUM-SELFTEST firmware ${JSON.stringify(root.firmware)} disks ${root.disks.length} dots ${root.builtinDots.length}`)
+            stop()
+            Qt.quit()
+        }
+    }
+
     Component.onCompleted: {
-        // No MaterialThemeLoader here: the singleton registers ii's "toggleLightDark" global
-        // shortcut, which the running ii shell already holds, and the compositor answers a
-        // second registration with a fatal protocol error. ii's default palette is used.
         disksProc.running = true
         firmwareProc.running = true
         dotsProc.running = true
@@ -287,6 +342,7 @@ ApplicationWindow {
                     anchors.fill: parent
                     spacing: 0
                     Loader {
+                        id: pageLoader
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         sourceComponent: [welcomePage, diskPage, regionPage, userPage, desktopPage, installPage][root.currentPage]
