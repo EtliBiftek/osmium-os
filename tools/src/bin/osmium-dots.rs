@@ -492,6 +492,8 @@ fn session() -> Result {
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
         let _ = Command::new(me).arg("karisim-baslat").spawn();
     }
+    // Detached: tells once, after the desktop is up, how to unlock the disk with the TPM.
+    let _ = Command::new("osmium-boot").arg("ipucu").stdout(std::process::Stdio::null()).spawn();
     if state_file("dots-pending")?.is_file() {
         // Detached helper: waits for the compositor, then opens a terminal to ask.
         let me = std::env::current_exe().map_err(|e| e.to_string())?;

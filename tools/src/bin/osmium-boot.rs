@@ -8,6 +8,8 @@
 //!   osmium-boot tpm         (re)enroll TPM2 unlock, asks for the disk passphrase
 //!   osmium-boot guvenli     enroll our Secure Boot keys (firmware in Setup Mode)
 //!   osmium-boot kurtar      rescue menu with a QR code of the errors (emergency.service)
+//!   osmium-boot ipucu       after login: a one-time notification when the disk could unlock with
+//!                           the TPM but does not yet (Secure Boot off), with the steps
 //!
 //! mkinitcpio builds /boot/osmium.efi (preset `default_uki`). `kur` signs it with sbctl when
 //! keys exist and copies it to /efi/EFI/Linux. The first install is `osmium.efi`. Every later
@@ -53,6 +55,7 @@ fn main() {
         ["tpm"] => enroll_tpm(),
         ["guvenli"] => secure_boot(),
         ["kurtar"] => rescue(),
+        ["ipucu"] => hint(),
         _ => Err(USAGE.into()),
     };
     exit_on_err("osmium-boot", res);
@@ -346,16 +349,82 @@ fn first_boot() -> Result {
         return Ok(());
     }
     let dev = luks_device()?;
-    if secure_boot_on() && tpm_present() {
-        warn(run(Command::new("systemd-cryptenroll")
-            .arg(format!("--unlock-key-file={}", key.display()))
-            .args(["--tpm2-device=auto", "--tpm2-pcrs=7", &dev])));
+    let status = if !tpm_present() {
+        TpmStatus::NoTpm
+    } else if !secure_boot_on() {
+        println!("osmium-boot: Güvenli Önyükleme kapalı: disk parolayla açılmaya devam edecek");
+        TpmStatus::SecureBootOff
     } else {
-        println!("osmium-boot: Güvenli Önyükleme kapalı ya da TPM yok: disk parolayla açılmaya devam edecek");
-    }
+        match run(Command::new("systemd-cryptenroll")
+            .arg(format!("--unlock-key-file={}", key.display()))
+            .args(["--tpm2-device=auto", "--tpm2-pcrs=7", &dev]))
+        {
+            Ok(()) => TpmStatus::Enrolled,
+            Err(e) => {
+                warn(Err(e));
+                TpmStatus::SecureBootOff
+            }
+        }
+    };
+    warn(write_state("tpm-durum", status.as_str()));
     // The installer's key file has done its job; the slot it opens goes with it.
     warn(run(Command::new("cryptsetup").arg("luksRemoveKey").arg(&dev).arg(&key)));
     io(fs::remove_file(&key), &key)
+}
+
+/// What the first boot found, in /var/lib/osmium/boot/tpm-durum (world-readable: the user's
+/// session reads it without root, which `cryptsetup luksDump` would need).
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum TpmStatus {
+    Enrolled,
+    SecureBootOff,
+    NoTpm,
+}
+
+impl TpmStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            TpmStatus::Enrolled => "kayitli",
+            TpmStatus::SecureBootOff => "guvenli-onyukleme-kapali",
+            TpmStatus::NoTpm => "tpm-yok",
+        }
+    }
+
+    fn parse(s: &str) -> Option<TpmStatus> {
+        [TpmStatus::Enrolled, TpmStatus::SecureBootOff, TpmStatus::NoTpm].into_iter().find(|t| t.as_str() == s.trim())
+    }
+}
+
+/// The steps to TPM unlock when Secure Boot is off, as shown after login and by `ipucu`.
+const TPM_STEPS: &str = "Disk her açılışta parola soruyor. Bu bilgisayarda parolasız açılış (TPM) için:\n\
+    1. sudo osmium-boot guvenli  (ne yapacağınızı adım adım yazar)\n\
+    2. UEFI ayarlarında Secure Boot'u \"Setup Mode\"a alın, komutu tekrarlayın\n\
+    3. Yeniden başlatıp Secure Boot'u açın, sonra: sudo osmium-boot tpm";
+
+/// One notification per user when the disk could unlock with the TPM but Secure Boot is off.
+fn hint() -> Result {
+    let status = fs::read_to_string(state("tpm-durum")).ok().and_then(|s| TpmStatus::parse(&s));
+    if status != Some(TpmStatus::SecureBootOff) || secure_boot_on() {
+        return Ok(());
+    }
+    let marker = osmium_tools::state_home()?.join("osmium/tpm-ipucu");
+    if marker.exists() {
+        return Ok(());
+    }
+    // The notification daemon starts with the desktop.
+    for _ in 0..60 {
+        if succeeds(Command::new("hyprctl").arg("version")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    std::thread::sleep(std::time::Duration::from_secs(10));
+    println!("{TPM_STEPS}");
+    if succeeds(Command::new("notify-send").args(["-a", "OsmiumOS", "-t", "0", "Parolasız disk açılışı", TPM_STEPS])) {
+        let _ = fs::create_dir_all(marker.parent().unwrap_or(&marker));
+        let _ = fs::write(&marker, "");
+    }
+    Ok(())
 }
 
 fn enroll_tpm() -> Result {
@@ -371,6 +440,7 @@ fn enroll_tpm() -> Result {
     }
     println!("Disk parolanız sorulacak; ardından disk bu makinede parolasız açılır (TPM, PCR 7).");
     run(Command::new("systemd-cryptenroll").args(["--wipe-slot=tpm2", "--tpm2-device=auto", "--tpm2-pcrs=7", &dev]))?;
+    warn(write_state("tpm-durum", TpmStatus::Enrolled.as_str()));
     println!("Tamam. Güvenli Önyükleme ayarları değişirse disk yine parola ister; o zaman bu komutu tekrar çalıştırın.");
     Ok(())
 }
@@ -549,6 +619,15 @@ fn rescue() -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tpm_status_round_trip() {
+        for t in [TpmStatus::Enrolled, TpmStatus::SecureBootOff, TpmStatus::NoTpm] {
+            assert_eq!(TpmStatus::parse(&format!("{}\n", t.as_str())), Some(t));
+        }
+        assert_eq!(TpmStatus::parse("?"), None);
+        assert!(TPM_STEPS.contains("osmium-boot guvenli") && TPM_STEPS.contains("osmium-boot tpm"));
+    }
 
     #[test]
     fn entry_names() {

@@ -33,6 +33,8 @@ ApplicationWindow {
     property var disks: []
     property string disk: ""
     property bool encrypt: false
+    // `osmium-install firmware`: decides what the encryption note says about TPM unlock.
+    property var firmware: ({})
     // Next to Windows: shrink its NTFS partition and keep it bootable.
     property bool alongside: false
     property int sizeGb: 60
@@ -126,6 +128,7 @@ ApplicationWindow {
         // shortcut, which the running ii shell already holds, and the compositor answers a
         // second registration with a fatal protocol error. ii's default palette is used.
         disksProc.running = true
+        firmwareProc.running = true
         dotsProc.running = true
         tzProc.running = true
     }
@@ -140,6 +143,13 @@ ApplicationWindow {
                 if (root.disks.length === 1) root.disk = root.disks[0].path
                 if (root.selectedDisk().windows) root.alongside = true
             }
+        }
+    }
+    Process {
+        id: firmwareProc
+        command: ["osmium-install", "firmware"]
+        stdout: StdioCollector {
+            onStreamFinished: { try { root.firmware = JSON.parse(text) } catch (e) {} }
         }
     }
     Process {
@@ -396,6 +406,16 @@ ApplicationWindow {
                     text: "Diski şifrele (LUKS)"
                     checked: root.encrypt
                     onCheckedChanged: root.encrypt = checked
+                }
+                NoticeBox {
+                    Layout.fillWidth: true
+                    visible: root.encrypt
+                    materialIcon: root.firmware.tpm && root.firmware.setup_mode ? "verified_user" : "info"
+                    text: !root.firmware.tpm
+                        ? "Bu bilgisayarda TPM yok: disk her açılışta parola sorar."
+                        : root.firmware.setup_mode
+                            ? "Güvenli Önyükleme anahtarları kurulumda yüklenecek. İlk açılışta parolayı bir kez girin; sonra disk bu bilgisayarda parolasız (TPM ile) açılır."
+                            : "Disk açılışta parola sorar. Parolasız açılış (TPM) için kurulumdan sonra terminalde: sudo osmium-boot guvenli — adımları o gösterir."
                 }
                 MaterialTextField {
                     Layout.fillWidth: true

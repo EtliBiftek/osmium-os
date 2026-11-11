@@ -70,6 +70,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let code = match args.next().as_deref() {
         Some("disks") => cmd_disks(),
+        Some("firmware") => cmd_firmware(),
         Some("check") => cmd_check(),
         Some("run") => cmd_run(),
         _ => {
@@ -91,6 +92,18 @@ fn cmd_disks() -> i32 {
             1
         }
     }
+}
+
+/// `{"secure_boot":..,"setup_mode":..,"tpm":..}` for the installer's encryption notes.
+fn cmd_firmware() -> i32 {
+    let var = |name: &str| fs::read(format!("/sys/firmware/efi/efivars/{name}-8be4df61-93ca-11d2-aa0d-00e098032b8c")).ok();
+    let on = |name: &str| var(name).is_some_and(|b| b.get(4) == Some(&1));
+    println!("{}", firmware_json(on("SecureBoot"), on("SetupMode"), Path::new("/sys/class/tpm/tpm0").exists()));
+    0
+}
+
+fn firmware_json(secure_boot: bool, setup_mode: bool, tpm: bool) -> String {
+    format!("{{\"secure_boot\":{secure_boot},\"setup_mode\":{setup_mode},\"tpm\":{tpm}}}")
 }
 
 fn read_config() -> Config {
@@ -1568,6 +1581,11 @@ PATH="/dev/nvme0n1p4" SIZE="700000000" FSTYPE="ntfs" PARTTYPE="de94bba4-06d1-4d4
         assert!(alongside_plan(Some(&bl), 50).unwrap_err().contains("BitLocker"));
         assert!(alongside_plan(None, 50).is_err());
         assert!(w.json().contains("\"blocker\":\"\""));
+    }
+
+    #[test]
+    fn firmware_report() {
+        assert_eq!(firmware_json(false, true, true), r#"{"secure_boot":false,"setup_mode":true,"tpm":true}"#);
     }
 
     #[test]
