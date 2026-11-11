@@ -40,7 +40,8 @@ ApplicationWindow {
     property string passphrase2: ""
     property string timezone: "Europe/Istanbul"
     property var timezones: ["Europe/Istanbul"]
-    property string locale: "tr_TR.UTF-8"
+    // Not `locale`: that is a FINAL property of the window type.
+    property string sysLocale: "tr_TR.UTF-8"
     property string keymap: "trq"
     property string xkbLayout: "tr"
     property string fullname: ""
@@ -80,7 +81,7 @@ ApplicationWindow {
             disk: disk, encrypt: encrypt ? "1" : "0", passphrase: encrypt ? passphrase : "",
             mode: alongside ? "yanina" : "sil", size_gb: String(sizeGb),
             hostname: hostname, username: username, fullname: fullname, password: password,
-            timezone: timezone, locale: locale, keymap: keymap, xkblayout: xkbLayout,
+            timezone: timezone, locale: sysLocale, keymap: keymap, xkblayout: xkbLayout,
             dots: dots, dots_mode: dotsMode,
         }
         return Object.keys(kv).map(k => `${k}=${clean(kv[k])}`).join("\n") + "\n"
@@ -432,8 +433,8 @@ ApplicationWindow {
                 icon: "translate"
                 title: "Dil"
                 ConfigSelectionArray {
-                    currentValue: root.locale
-                    onSelected: v => root.locale = v
+                    currentValue: root.sysLocale
+                    onSelected: v => root.sysLocale = v
                     options: [
                         { displayName: "Türkçe", icon: "language", value: "tr_TR.UTF-8" },
                         { displayName: "English", icon: "language", value: "en_US.UTF-8" },
@@ -612,7 +613,7 @@ ApplicationWindow {
                     text: `Disk: ${root.disk || "-"}${root.encrypt ? " (şifreli)" : ""}`
                         + `${root.alongside ? ", Windows'un yanına " + root.sizeGb + " GB" : ""}\n`
                         + `Kullanıcı: ${root.username || "-"} @ ${root.hostname}\n`
-                        + `Bölge: ${root.timezone}, ${root.locale}, klavye ${root.xkbLayout}\n`
+                        + `Bölge: ${root.timezone}, ${root.sysLocale}, klavye ${root.xkbLayout}\n`
                         + `Masaüstü: ${root.dots}${root.dots.startsWith("github:") ? " (" + root.dotsMode + ")" : ""}`
                 }
                 NoticeBox {

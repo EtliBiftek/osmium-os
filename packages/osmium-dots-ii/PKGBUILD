@@ -41,11 +41,23 @@ depends=(
   # kde bits the shell launches
   bluedevil bluez gnome-keyring networkmanager plasma-nm polkit-kde-agent dolphin systemsettings
 )
-source=("dots-hyprland-$_commit.tar.gz::$url/archive/$_commit.tar.gz")
-sha256sums=('8462c60ee8fbc634289a5fae0d2fbcc523b91a6a3690e6e49d273d81e9cf9c7a')
+# widgets/shapes is a git submodule upstream; GitHub's tarball leaves it empty and ii's whole
+# shell then fails to load ("qs.modules.common.widgets.shapes is not installed"). Pinned to the
+# commit the dots commit records; a git source is checked by its commit hash.
+_shapes=e31ec4cb4ebf6a46b267f5c42eabf6874916fa16
+source=("dots-hyprland-$_commit.tar.gz::$url/archive/$_commit.tar.gz"
+        "rounded-polygon-qmljs::git+https://github.com/end-4/rounded-polygon-qmljs.git#commit=$_shapes")
+sha256sums=('8462c60ee8fbc634289a5fae0d2fbcc523b91a6a3690e6e49d273d81e9cf9c7a'
+            'SKIP')
+makedepends=(git)
 
 prepare() {
   cd "$srcdir/dots-hyprland-$_commit/dots/.config/quickshell/ii"
+  local shapes=modules/common/widgets/shapes
+  rmdir "$shapes" 2>/dev/null || true
+  cp -a "$srcdir/rounded-polygon-qmljs" "$shapes"
+  rm -rf "$shapes/.git"
+  test -f "$shapes/material-shapes.js"
   # The AI sidebar starts on a local Ollama model when one is installed (offline, no API key).
   # A model picked in the UI is persisted and wins from then on.
   sed -i 's/property string model: "gemini-2.5-flash"/property string model: ""/' modules/common/Persistent.qml
@@ -74,4 +86,5 @@ package() {
 
   install -Dm644 "$src/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   cp -a "$src/licenses/." "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 "$srcdir/rounded-polygon-qmljs/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/rounded-polygon-qmljs-Apache-2.0"
 }
