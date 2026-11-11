@@ -14,23 +14,19 @@ in `docs/hyprland-rust-gaps.md`.
 - **Install next to Windows**: NTFS shrink, XBOOTLDR `/boot`, systemd-boot on Windows' ESP.
   Covered with a stand-in Windows disk (not a real Windows install).
 - **Dot preview and mixing** (`osmium-dots onizle | parcalar | karistir`), installer preview button.
-- **Installer UI**: loaded in the real live desktop in CI (no QML errors, screenshot artifact).
-  Only loading is tested; clicking through the pages is not.
+- **Installer UI**: loaded in the real live desktop in CI (no QML errors, ii shell keeps running,
+  screenshot artifact) and walked page by page by its self-test.
+- **TPM hint**: the installer says whether TPM unlock will be set up; otherwise a notification
+  after login lists the steps. **Rescue menu in the initramfs** (mkinitcpio hook `osmium-kurtar`).
+- **Mixing**: color, wallpaper, bar, notifications, launcher, lock screen.
 - Calamares removed; kernel is `linux-zen`.
 
 ## Not started
 
-- **Installer colors**: the installer no longer loads ii's `MaterialThemeLoader` (its global
-  shortcut collides with the running shell's), so it shows ii's default palette instead of the
-  wallpaper colors. Reading `~/.local/state/quickshell/user/generated/colors.json` directly would
-  bring them back.
-
-- **Dot mixing beyond color, wallpaper and bar**: other parts (launcher, notifications, lock
-  screen) need each dot to declare how to stop its own; ii's bar is part of its shell and cannot
-  be swapped.
-- **Rescue in the initramfs**: the QR rescue menu runs in the real root's emergency mode. A failure
-  inside the initramfs (disk not found) only gets boot counting (three power cycles, then the
-  previous kernel), no menu.
+- **ii as a mix base for bar, notifications and launcher**: those are parts of ii's Quickshell
+  shell and cannot be stopped one by one; ii takes colors, wallpaper and the lock screen only.
+- **Installer self-test** walks every page and checks the config it would send, but does not
+  type into fields or press the install button in the UI (the backend install is tested).
 
 ## Needs the user (never done by Claude)
 

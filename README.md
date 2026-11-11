@@ -50,9 +50,11 @@ osmium-dots karistir neon ii renk=synthwave duvar=synthwave   # ii with synthwav
 ```
 
 Mixing works with the parts each dot declares in its `info`: `renk` (accent color), `duvar`
-(wallpaper) and `cubuk` (bar). ii rebuilds its whole palette from a color or wallpaper; a bar
-can only replace a base's bar when the base says how to stop its own (synthwave does, ii's bar
-is part of its shell). The installer has a preview button for the built-in desktops.
+(wallpaper), `cubuk` (bar), `bildirim` (notifications), `baslatici` (launcher) and `kilit` (lock
+screen). ii rebuilds its whole palette from a color or wallpaper; a bar or notification daemon
+replaces the base's own when the base says how to stop it (synthwave does; ii's are part of its
+shell); a launcher or lock screen takes over the base's key (`SUPER, L` and so on). The installer
+has a preview button for the built-in desktops.
 
 Replaced `~/.config/<dir>` entries go to `~/.local/state/osmium/dots-backup/<time>/`. The login
 session (`osmium-dots session`, used by greetd and the live ISO) applies `ii` on first login.
@@ -80,15 +82,18 @@ systemd-boot starts a signed UKI (`osmium-boot`, see `tools/src/bin/osmium-boot.
   Microsoft's, for option ROMs) and Secure Boot is on from the first boot; otherwise
   `sudo osmium-boot guvenli` explains how to get there.
 - **TPM2 unlock**: with LUKS and Secure Boot on, the first boot enrolls the TPM (PCR 7), so the
-  passphrase is typed once and never again on that machine. Without Secure Boot the disk keeps
+  passphrase is typed once and never again on that machine. The installer says beforehand
+  whether this happens on its own; otherwise a notification after the first login lists the
+  steps (`sudo osmium-boot guvenli`, then `sudo osmium-boot tpm`). Without Secure Boot the disk keeps
   asking (a TPM bound to a firmware without Secure Boot would open for any boot medium).
   The passphrase prompt uses the system keymap. `sudo osmium-boot tpm` re-enrolls.
 - **Self-healing updates**: a new kernel/initramfs is installed as `osmium+3.efi`; systemd-boot
   tries it three times and keeps it only once the login screen came up. Otherwise it boots the
   previous image (`osmium-kurtarma.efi`), which rolls the root back to the snapshot taken before
   the update and reboots into the old, working system. `osmium-boot` shows the state.
-- **Rescue screen**: when the system lands in emergency mode, a Turkish menu shows the errors and
-  a QR code of them, and offers to go back to the previous snapshot.
+- **Rescue screen**: when the system lands in emergency mode, also inside the initramfs (disk not
+  found, cannot unlock), a Turkish menu shows the errors and a QR code of them, and offers to go
+  back to the previous snapshot or to boot the previous kernel once.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
 stdin (`key=value` lines). UEFI only.

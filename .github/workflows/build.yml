@@ -254,6 +254,7 @@ jobs:
           need BROKEN-BUILT "could not build the broken test kernel"
           need ROLLBACK-OK "a kernel that does not boot was not rolled back"
           need MIX-OK "osmium-dots karistir/apply of a mixed dot failed"
+          need MIX2-OK "mixing a bar and a launcher into synthwave failed"
           need INITRD-RESCUE-OK "the initramfs has no rescue menu (osmium-kurtar hook)"
       - name: Boot the install next to Windows
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}

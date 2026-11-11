@@ -24,10 +24,16 @@ checks() {
   [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && say BOOT-OK
   # Mixing: ii with synthwave's accent color and wallpaper; synthwave cannot take ii's bar.
   runuser -u tester -- osmium-dots parcalar synthwave | sed 's/^/OSMIUM-PARTS /'
-  runuser -u tester -- osmium-dots karistir neon ii renk=synthwave duvar=synthwave \
+  runuser -u tester -- osmium-dots karistir neon ii renk=synthwave duvar=synthwave kilit=synthwave \
     && grep -q 'karisim.renk=#ff2bd6' /home/tester/.local/share/osmium/dots/neon/info \
+    && grep -q 'karisim.kilit=hyprlock' /home/tester/.local/share/osmium/dots/neon/info \
+    && [ -f /home/tester/.local/share/osmium/dots/neon/home/.config/hypr/hyprlock.conf ] \
     && runuser -u tester -- env HOME=/tmp/mixhome XDG_STATE_HOME=/tmp/mixhome/.local/state XDG_DATA_HOME=/home/tester/.local/share osmium-dots apply neon >/dev/null \
     && [ -d /tmp/mixhome/.config/quickshell/ii ] && say MIX-OK
+  # synthwave as the base takes m3ww's EWW bar and launcher.
+  runuser -u tester -- osmium-dots karistir neonbar synthwave cubuk=m3ww baslatici=m3ww \
+    && [ -d /home/tester/.local/share/osmium/dots/neonbar/home/.config/eww ] \
+    && grep -q 'karisim.baslatici=fuzzel' /home/tester/.local/share/osmium/dots/neonbar/info && say MIX2-OK
 }
 efibyte() { od -An -tu1 -j4 -N1 "/sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" 2>/dev/null | tr -d ' '; }
 

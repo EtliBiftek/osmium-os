@@ -10,9 +10,11 @@
 //!   osmium-dots karistir <ad> <taban> <parça>=<id>...  a new dot: <taban> with parts of others
 //!
 //! Mixing. A dot's `info` may declare parts: `renk=#rrggbb` (its accent color), `duvar=<image>`
-//! (its wallpaper), `cubuk=<paths under $HOME>` with `cubuk.baslat=<command>` (its bar). The base
+//! (its wallpaper), and `cubuk`, `bildirim`, `baslatici`, `kilit` (bar, notifications, launcher,
+//! lock screen) as `<part>=<command>` with optional `<part>.dosyalar=<paths under $HOME>`. The base
 //! says how it takes them: `renk.uygula=` / `duvar.uygula=` (commands with `{renk}` / `{duvar}`),
-//! `cubuk.durdur=<process name>` (its own bar, stopped when another one is mixed in). A mix is a
+//! `<part>.durdur=<process>` for bar and notifications (its own is stopped), `<part>.tus=MODS, KEY`
+//! for launcher and lock screen (that key is rebound). See `PARTS`. A mix is a
 //! user dot in ~/.local/share/osmium/dots/<ad>/ that inherits the base; its parts are applied by
 //! a helper the session starts once the compositor runs (`karisim-baslat`).
 //!
@@ -628,20 +630,52 @@ fn nested_socket(runtime: &Path, since: SystemTime) -> Option<String> {
 
 // ---------- mixing ----------
 
-const PARTS: &[&str] = &["renk", "duvar", "cubuk"];
+/// Mixable parts, by how they are taken over:
+/// - value parts (`renk`, `duvar`): the base applies the value with `<part>.uygula`;
+/// - process parts (`cubuk`, `bildirim`): the source's command (`<part>=<command>`) runs after
+///   the base's own process (`<part>.durdur`) was stopped;
+/// - key parts (`baslatici`, `kilit`): the base's key (`<part>.tus`, e.g. `SUPER, L`) is rebound
+///   to the source's command (`<part>=<command>`).
+///
+/// Process and key parts bring the source's files along when it lists them (`<part>.dosyalar`).
+const PARTS: &[&str] = &["renk", "duvar", "cubuk", "bildirim", "baslatici", "kilit"];
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Kind {
+    Value,
+    Process,
+    Key,
+}
+
+fn kind(part: &str) -> Kind {
+    match part {
+        "cubuk" | "bildirim" => Kind::Process,
+        "baslatici" | "kilit" => Kind::Key,
+        _ => Kind::Value,
+    }
+}
 
 /// The parts a dot's info offers: (part, value).
 fn offered(info: &BTreeMap<String, String>) -> Vec<(&'static str, String)> {
     PARTS.iter().filter_map(|p| info.get(*p).filter(|v| !v.is_empty()).map(|v| (*p, v.clone()))).collect()
 }
 
-/// What a base accepts: each part needs its way to apply (or, for the bar, to stop its own).
+/// What a base accepts: each part needs its way in.
 fn accepts(info: &BTreeMap<String, String>, part: &str) -> bool {
-    match part {
-        "renk" | "duvar" => info.get(&format!("{part}.uygula")).is_some_and(|v| !v.is_empty()),
-        "cubuk" => info.get("cubuk.durdur").is_some_and(|v| !v.is_empty()),
-        _ => false,
-    }
+    let key = match kind(part) {
+        Kind::Value => "uygula",
+        Kind::Process => "durdur",
+        Kind::Key => "tus",
+    };
+    PARTS.contains(&part) && info.get(&format!("{part}.{key}")).is_some_and(|v| !v.is_empty())
+}
+
+/// `MODS, KEY` as hyprlang writes a bind's first two fields.
+fn valid_key(k: &str) -> bool {
+    k.split_once(',').is_some_and(|(m, key)| {
+        m.chars().all(|c| c.is_ascii_alphanumeric() || " _+".contains(c)) && !key.trim().is_empty()
+            && key.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
 }
 
 /// `karisim.<part>` entries of a mix.
@@ -676,21 +710,41 @@ fn parts(id: &str) -> Result {
 }
 
 /// The info file of a mix, after checking that the base takes each part and the source has it.
-fn mix_info(name: &str, base: &BTreeMap<String, String>, base_id: &str, picks: &[(String, String, String)]) -> Result<String> {
+/// One part picked for a mix: what the info records and which files come along.
+#[derive(Debug, PartialEq, Clone)]
+struct Pick {
+    part: String,
+    from: String,
+    /// Recorded as `karisim.<part>`: the value, or the command that starts or opens the part.
+    value: String,
+    /// Paths under $HOME copied from the source dot.
+    files: Vec<String>,
+}
+
+/// What the source dot gives for `part`.
+fn pick(src: &BTreeMap<String, String>, part: &str, from: &str) -> Result<Pick> {
+    let get = |k: &str| src.get(k).filter(|v| !v.is_empty()).cloned();
+    let value = get(part).ok_or_else(|| format!("`{from}` {part} parçası vermiyor"))?;
+    let split = |v: Option<String>| v.map(|v| v.split_whitespace().map(String::from).collect()).unwrap_or_default();
+    let files = match kind(part) {
+        Kind::Value => Vec::new(),
+        Kind::Process | Kind::Key => split(get(&format!("{part}.dosyalar"))),
+    };
+    Ok(Pick { part: part.into(), from: from.into(), value, files })
+}
+
+fn mix_info(name: &str, base: &BTreeMap<String, String>, base_id: &str, picks: &[Pick]) -> Result<String> {
     let mut text = format!("name={name}\ntitle={name} ({base_id} karışımı)\ninherits={base_id}\n");
     let mut desc = Vec::new();
-    for (part, from, value) in picks {
-        if !accepts(base, part) {
-            return Err(format!("`{base_id}` {part} parçasını başkasından alamıyor (bkz: osmium-dots parcalar {base_id})"));
+    for p in picks {
+        if !accepts(base, &p.part) {
+            return Err(format!("`{base_id}` {} parçasını başkasından alamıyor (bkz: osmium-dots parcalar {base_id})", p.part));
         }
-        if value.contains('\n') || (part == "renk" && !valid_color(value)) {
-            return Err(format!("`{from}`: geçersiz {part} değeri"));
+        if p.value.contains('\n') || (p.part == "renk" && !valid_color(&p.value)) {
+            return Err(format!("`{}`: geçersiz {} değeri", p.from, p.part));
         }
-        text += &format!("karisim.{part}={value}\n");
-        if part == "cubuk" {
-            text += &format!("karisim.cubuk.kaynak={from}\n");
-        }
-        desc.push(format!("{part}: {from}"));
+        text += &format!("karisim.{}={}\n", p.part, p.value);
+        desc.push(format!("{}: {}", p.part, p.from));
     }
     text += &format!("description={base_id} tabanı; {}\nlicense=GPL-3.0-or-later\n", desc.join(", "));
     Ok(text)
@@ -706,34 +760,25 @@ fn mix(name: &str, base_id: &str, picks: &[&str]) -> Result {
     }
     let base = resolved_info(dir, base_id)?;
     let mut resolved = Vec::new();
-    let mut bar_files = None;
-    for pick in picks {
-        let (part, from) = pick.split_once('=').ok_or_else(|| format!("`{pick}`: <parça>=<dot> bekleniyordu"))?;
+    for p in picks {
+        let (part, from) = p.split_once('=').ok_or_else(|| format!("`{p}`: <parça>=<dot> bekleniyordu"))?;
         if !PARTS.contains(&part) {
-            return Err(format!("bilinmeyen parça `{part}` (renk, duvar, cubuk)"));
+            return Err(format!("bilinmeyen parça `{part}` ({})", PARTS.join(", ")));
         }
-        let src = resolved_info(dir, from)?;
-        let value = src.get(part).filter(|v| !v.is_empty()).ok_or_else(|| format!("`{from}` {part} parçası vermiyor"))?.clone();
-        if part == "cubuk" {
-            let start = src.get("cubuk.baslat").filter(|v| !v.is_empty()).ok_or_else(|| format!("`{from}`: cubuk.baslat yok"))?;
-            bar_files = Some((from.to_string(), value.clone()));
-            resolved.push(("cubuk".to_string(), from.to_string(), start.clone()));
-        } else {
-            resolved.push((part.to_string(), from.to_string(), value));
-        }
+        resolved.push(pick(&resolved_info(dir, from)?, part, from)?);
     }
     let info = mix_info(name, &base, base_id, &resolved)?;
     let out = user_dots_dir()?.join(name);
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(out.join("home")).map_err(|e| format!("{}: {e}", out.display()))?;
-    // The bar's files come along; everything else is the base's.
-    if let Some((from, paths)) = bar_files {
-        for rel in paths.split_whitespace() {
+    // The picked parts' files come along; everything else is the base's.
+    for p in &resolved {
+        for rel in &p.files {
             if rel.starts_with('/') || rel.contains("..") {
-                return Err(format!("`{from}`: geçersiz yol `{rel}`"));
+                return Err(format!("`{}`: geçersiz yol `{rel}`", p.from));
             }
-            let src = chain(dir, &from)?.iter().rev().map(|i| dot_dir(dir, i).join(i).join("home").join(rel)).find(|p| p.exists());
-            let src = src.ok_or_else(|| format!("`{from}`: {rel} bulunamadı"))?;
+            let src = chain(dir, &p.from)?.iter().rev().map(|i| dot_dir(dir, i).join(i).join("home").join(rel)).find(|x| x.exists());
+            let src = src.ok_or_else(|| format!("`{}`: {rel} bulunamadı", p.from))?;
             let dest = out.join("home").join(rel);
             fs::create_dir_all(dest.parent().unwrap()).map_err(|e| format!("{}: {e}", dest.display()))?;
             osmium_tools::run(Command::new("cp").arg("-a").arg("--no-preserve=ownership").arg(&src).arg(&dest))?;
@@ -750,8 +795,13 @@ fn apply_command(template: &str, part: &str) -> String {
     template.replace(&format!("{{{part}}}"), "\"$1\"")
 }
 
-/// After login: give the compositor the mixed-in parts. Colors and wallpaper once per mix,
-/// the bar on every login (the base's own is stopped first).
+/// `hyprctl keyword` calls that move `key` to `command`: the base's bind goes first.
+fn rebind(key: &str, command: &str) -> Option<[String; 2]> {
+    valid_key(key).then(|| [key.to_string(), format!("{key}, exec, {command}")])
+}
+
+/// After login: give the compositor the mixed-in parts. Colors and wallpaper once per mix;
+/// processes and keys on every login (the base's own process is stopped first).
 fn mix_start() -> Result {
     let Some(id) = current() else { return Ok(()) };
     let info = resolved_info(Path::new(DOTS_DIR), &id)?;
@@ -762,13 +812,13 @@ fn mix_start() -> Result {
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    // Shells set up their color tools during the first seconds.
+    // Shells set up their color tools and binds during the first seconds.
     std::thread::sleep(std::time::Duration::from_secs(5));
     let done = state_file("karisim-uygulandi")?;
     let first = fs::read_to_string(&done).map(|d| d.trim() != id).unwrap_or(true);
     for (part, value) in &parts {
-        match part.as_str() {
-            "renk" | "duvar" if first => {
+        match kind(part) {
+            Kind::Value if first => {
                 if let Some(t) = info.get(&format!("{part}.uygula")) {
                     let ok = succeeds(Command::new("sh").args(["-c", &apply_command(t, part), "osmium-dots", value]));
                     if !ok {
@@ -776,13 +826,20 @@ fn mix_start() -> Result {
                     }
                 }
             }
-            "cubuk" => {
-                if let Some(own) = info.get("cubuk.durdur") {
+            Kind::Value => {}
+            Kind::Process => {
+                if let Some(own) = info.get(&format!("{part}.durdur")) {
                     succeeds(Command::new("pkill").args(["-x", own]));
                 }
                 let _ = output(Command::new("hyprctl").args(["dispatch", "exec", value]));
             }
-            _ => {}
+            Kind::Key => match info.get(&format!("{part}.tus")).and_then(|k| rebind(k, value)) {
+                Some([unbind, bind]) => {
+                    let _ = output(Command::new("hyprctl").args(["keyword", "unbind", &unbind]));
+                    let _ = output(Command::new("hyprctl").args(["keyword", "bind", &bind]));
+                }
+                None => eprintln!("osmium-dots: {part}.tus geçersiz"),
+            },
         }
     }
     let _ = fs::write(&done, &id);
@@ -1021,30 +1078,66 @@ mod tests {
         parse_info(text)
     }
 
+    const SYNTH: &str = "name=synthwave\nrenk=#ff2a6d\nduvar=/usr/share/backgrounds/osmium/synthwave.png\n\
+        cubuk=ironbar\ncubuk.dosyalar=.config/ironbar\ncubuk.durdur=ironbar\nduvar.uygula=awww img {duvar}\n\
+        bildirim=swaync\nbildirim.durdur=swaync\n\
+        baslatici=anyrun\nbaslatici.dosyalar=.config/anyrun\nbaslatici.tus=SUPER, Space\n\
+        kilit=hyprlock\nkilit.dosyalar=.config/hypr/hyprlock.conf\nkilit.tus=SUPER, L\n";
+
     #[test]
     fn parts_offered_and_accepted() {
-        let synth = info("name=synthwave\nrenk=#ff2a6d\nduvar=/usr/share/backgrounds/osmium/synthwave.png\ncubuk=.config/ironbar\ncubuk.baslat=ironbar\ncubuk.durdur=ironbar\nduvar.uygula=awww img {duvar}\n");
-        let ii = info("name=ii\nrenk.uygula=~/.config/quickshell/ii/scripts/colors/switchwall.sh --color {renk}\nduvar.uygula=~/.config/quickshell/ii/scripts/colors/switchwall.sh --image {duvar}\n");
-        assert_eq!(offered(&synth).iter().map(|(p, _)| *p).collect::<Vec<_>>(), ["renk", "duvar", "cubuk"]);
+        let synth = info(SYNTH);
+        let ii = info("name=ii\nrenk.uygula=x --color {renk}\nduvar.uygula=x --image {duvar}\nkilit.tus=SUPER, L\n");
+        let offer: Vec<&str> = offered(&synth).iter().map(|(p, _)| *p).collect();
+        assert_eq!(offer, ["renk", "duvar", "cubuk", "bildirim", "baslatici", "kilit"]);
         assert!(offered(&ii).is_empty());
-        assert!(accepts(&ii, "renk") && accepts(&ii, "duvar") && !accepts(&ii, "cubuk"));
-        assert!(accepts(&synth, "cubuk") && accepts(&synth, "duvar") && !accepts(&synth, "renk"));
+        for (part, yes) in [("renk", true), ("duvar", true), ("kilit", true), ("cubuk", false), ("bildirim", false), ("baslatici", false)] {
+            assert_eq!(accepts(&ii, part), yes, "ii {part}");
+        }
+        for part in ["cubuk", "bildirim", "baslatici", "kilit", "duvar"] {
+            assert!(accepts(&synth, part), "synthwave {part}");
+        }
+        assert!(!accepts(&synth, "renk") && !accepts(&synth, "bilinmeyen"));
+    }
+
+    #[test]
+    fn picks_by_kind() {
+        let synth = info(SYNTH);
+        let bar = pick(&synth, "cubuk", "synthwave").unwrap();
+        assert_eq!((bar.value.as_str(), bar.files.clone()), ("ironbar", vec![".config/ironbar".to_string()]));
+        let lock = pick(&synth, "kilit", "synthwave").unwrap();
+        assert_eq!((lock.value.as_str(), lock.files.clone()), ("hyprlock", vec![".config/hypr/hyprlock.conf".to_string()]));
+        let color = pick(&synth, "renk", "synthwave").unwrap();
+        assert!(color.files.is_empty() && color.value == "#ff2a6d");
+        let notify = pick(&synth, "bildirim", "synthwave").unwrap();
+        assert!(notify.value == "swaync" && notify.files.is_empty(), "no files needed");
+        assert!(pick(&info(""), "kilit", "y").is_err());
     }
 
     #[test]
     fn mix_info_checks_the_base() {
-        let ii = info("renk.uygula=x --color {renk}\nduvar.uygula=x --image {duvar}\n");
-        let picks = vec![("renk".to_string(), "synthwave".to_string(), "#ff2a6d".to_string())];
-        let text = mix_info("neon", &ii, "ii", &picks).unwrap();
-        let parsed = info(&text);
+        let ii = info("renk.uygula=x --color {renk}\nduvar.uygula=x --image {duvar}\nkilit.tus=SUPER, L\n");
+        let synth = info(SYNTH);
+        let picks = vec![pick(&synth, "renk", "synthwave").unwrap(), pick(&synth, "kilit", "synthwave").unwrap()];
+        let parsed = info(&mix_info("neon", &ii, "ii", &picks).unwrap());
         assert_eq!(parsed["inherits"], "ii");
         assert_eq!(parsed["karisim.renk"], "#ff2a6d");
-        assert_eq!(mix_parts(&parsed), [("renk".to_string(), "#ff2a6d".to_string())]);
-        let bar = vec![("cubuk".to_string(), "synthwave".to_string(), "ironbar".to_string())];
+        assert_eq!(parsed["karisim.kilit"], "hyprlock");
+        assert_eq!(mix_parts(&parsed).len(), 2);
+        let bar = vec![pick(&synth, "cubuk", "synthwave").unwrap()];
         assert!(mix_info("x", &ii, "ii", &bar).unwrap_err().contains("cubuk"));
-        let bad = vec![("renk".to_string(), "s".to_string(), "pink; rm -rf ~".to_string())];
+        let bad = vec![Pick { part: "renk".into(), from: "s".into(), value: "pink; rm -rf ~".into(), files: vec![] }];
         assert!(mix_info("x", &ii, "ii", &bad).is_err());
         assert!(valid_name("neon-ii") && !valid_name("Neon") && !valid_name("../x") && !valid_name(""));
+    }
+
+    #[test]
+    fn rebinds_a_key() {
+        assert_eq!(rebind("SUPER, L", "hyprlock"), Some(["SUPER, L".to_string(), "SUPER, L, exec, hyprlock".to_string()]));
+        assert_eq!(rebind("SUPER + SHIFT, Space", "anyrun").unwrap()[1], "SUPER + SHIFT, Space, exec, anyrun");
+        for bad in ["SUPER", "SUPER, ", "SUPER;rm, L", "SUPER, L; x"] {
+            assert_eq!(rebind(bad, "x"), None, "{bad}");
+        }
     }
 
     #[test]
