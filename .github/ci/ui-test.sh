@@ -4,9 +4,18 @@
 exec >/dev/ttyS0 2>&1
 uid=$(id -u osmium)
 rt=/run/user/$uid
+# systemd.run boots only this unit: bring up the normal system (logind, getty autologin on tty1).
+systemctl start --no-block multi-user.target
+sleep 5
 systemctl start getty@tty1.service
 for i in $(seq 90); do w=$(ls "$rt" 2>/dev/null | grep -m1 '^wayland-[0-9]*$') && [ -n "$w" ] && break; sleep 2; done
-[ -n "$w" ] || { echo OSMIUM-UI-NO-DESKTOP; tail -50 "$rt/hyprland-rust.log"; poweroff -f; }
+if [ -z "$w" ]; then
+  echo OSMIUM-UI-NO-DESKTOP
+  loginctl list-sessions --no-legend | sed 's/^/OSMIUM-UI-DIAG /'
+  systemctl status getty@tty1.service systemd-logind.service --no-pager 2>&1 | head -30 | sed 's/^/OSMIUM-UI-DIAG /'
+  tail -50 "$rt/hyprland-rust.log" 2>&1 | sed 's/^/OSMIUM-UI-DIAG /'
+  poweroff -f
+fi
 echo "OSMIUM-UI-DESKTOP $w"
 for i in $(seq 60); do pgrep -f osmium-installer.qml >/dev/null && break; sleep 2; done
 sleep 20
