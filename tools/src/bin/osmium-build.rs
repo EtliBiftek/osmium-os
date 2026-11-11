@@ -66,6 +66,15 @@ fn read(path: &Path) -> Result<String> {
     io(fs::read_to_string(path), path)
 }
 
+/// releng's live initramfs HOOKS line without `microcode`: mkarchiso then puts the ucode images
+/// next to the kernel, where osmium-install finds them (see common/.../archiso.conf).
+fn live_hooks(releng: &str) -> Option<String> {
+    let line = releng.lines().map(str::trim).find(|l| l.starts_with("HOOKS=("))?;
+    let list = line.strip_prefix("HOOKS=(")?.strip_suffix(')')?;
+    let hooks: Vec<&str> = list.split_whitespace().filter(|h| *h != "microcode").collect();
+    Some(format!("HOOKS=({})", hooks.join(" ")))
+}
+
 fn iso(root: &Path, edition: &str) -> Result {
     let ed = root.join("editions").join(edition);
     if !ed.is_dir() {
@@ -76,6 +85,8 @@ fn iso(root: &Path, edition: &str) -> Result {
     remove_dir(&profile)?;
     io(fs::create_dir_all(&work), &work)?;
     run(Command::new("cp").args(["-a", "/usr/share/archiso/configs/releng"]).arg(&profile))?;
+    let initcpio = profile.join("airootfs/etc/mkinitcpio.conf.d/archiso.conf");
+    let hooks = live_hooks(&read(&initcpio)?).ok_or_else(|| format!("{}: no HOOKS line", initcpio.display()))?;
 
     for layer in [root.join("common"), ed] {
         let overlay = layer.join("airootfs");
@@ -87,6 +98,9 @@ fn iso(root: &Path, edition: &str) -> Result {
             append(profile.join("packages.x86_64"), &read(&pkgs)?)?;
         }
     }
+    // Our file replaces releng's; its HOOKS follow releng's, so archiso changes need no edit here.
+    let ours = read(&initcpio)?;
+    io(fs::write(&initcpio, format!("{hooks}\n{ours}")), &initcpio)?;
     let key = public_key(root);
     if let Some(key) = &key {
         // pacstrap uses the build host's keyring.
@@ -478,6 +492,16 @@ fn sig_path(pkg: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_hooks_follow_releng() {
+        let releng = "# comment\nHOOKS=(base udev microcode modconf kms memdisk archiso block filesystems keyboard)\nCOMPRESSION=\"xz\"\n";
+        assert_eq!(
+            live_hooks(releng).as_deref(),
+            Some("HOOKS=(base udev modconf kms memdisk archiso block filesystems keyboard)")
+        );
+        assert_eq!(live_hooks("COMPRESSION=\"xz\"\n"), None);
+    }
 
     #[test]
     fn srcinfo_pgp_keys() {

@@ -64,7 +64,14 @@ prepare() {
   sed -i 's|swww init && swww img|awww-daemon \& sleep 1 \&\& awww img|' hypr/execs.conf
   sed -i 's/\bswww\b/awww/g' eww/scripts/switchwall
   # Hyprland's socket dir moved from /tmp/hypr to $XDG_RUNTIME_DIR/hypr (hyprland-rust follows that).
+  # At the pin all 11 uses are `socat UNIX-CONNECT:/tmp/hypr/$SIG/.socket2.sock` in eww/scripts; the
+  # events they read (workspace, focusedmon, create/destroyworkspace, movewindow, monitor*,
+  # activewindow, activelayout) are all emitted by hyprland-rust. Fail if any other form appears.
   grep -rlF '/tmp/hypr/' eww | xargs -r sed -i 's|UNIX-CONNECT:/tmp/hypr/|UNIX-CONNECT:"$XDG_RUNTIME_DIR"/hypr/|'
+  if grep -rnF '/tmp/hypr' eww hypr ../.local; then
+    echo "ERROR: m3ww still uses /tmp/hypr (see above)" >&2
+    return 1
+  fi
   # Upstream reserved bar space with `monitor = addreserved` (unimplemented here); use an
   # exclusive layer-shell zone instead.
   sed -i 's/^\(\s*\):stacking "fg"/&\n\1:exclusive true/' eww/eww.yuck
