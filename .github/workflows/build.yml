@@ -178,11 +178,12 @@ jobs:
           params=$(grep -rhom1 'archisobasedir=[^ ]* archisosearchuuid=[^ ]*' loader boot | head -1)
           [ -n "$params" ] || { echo "no archiso boot parameters found in the ISO"; exit 1; }
           for d in luks plain; do qemu-img create -q -f qcow2 disk-$d.qcow2 24G; done
-          for v in wipe luks plain; do cp /usr/share/OVMF/OVMF_VARS_4M.fd vars-$v.fd; done
+          qemu-img create -q -f qcow2 disk-win.qcow2 64G
+          for v in wipe luks plain win; do cp /usr/share/OVMF/OVMF_VARS_4M.fd vars-$v.fd; done
           mkdir -p tpm
-          # inst <enc> <disk> <vars> <secure boot> <log name>
+          # inst <enc> <disk> <vars> <secure boot> <log name> [windows]
           inst() {
-            { echo "enc=$1"; echo "cat > /tmp/boot-test.sh <<'BOOTTEST'"; cat .github/ci/boot-test.sh; echo BOOTTEST
+            { echo "enc=$1"; echo "win=${6:-0}"; echo "cat > /tmp/boot-test.sh <<'BOOTTEST'"; cat .github/ci/boot-test.sh; echo BOOTTEST
               cat .github/ci/install-body.sh; } > test.img
             truncate -s 1M test.img
             if [ "$4" = 1 ]; then sudo pkill swtpm; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; fi
@@ -195,15 +196,38 @@ jobs:
           inst 0 disk-luks.qcow2 vars-wipe.fd 0 wipe
           inst 1 disk-luks.qcow2 vars-luks.fd 1 luks
           inst 0 disk-plain.qcow2 vars-plain.fd 0 plain
+          inst 0 disk-win.qcow2 vars-win.fd 0 win 1
           grep -aq OSMIUM-INSTALL-OK install-wipe.log || { echo "::error::first plain install failed"; tail -60 install-wipe.log; exit 1; }
           grep -aq OSMIUM-LUKS-OK install-luks.log || { echo "::error::encrypted install failed"; tail -60 install-luks.log; exit 1; }
           grep -aq OSMIUM-LUKS2-OK install-luks.log || { echo "::error::the disk is not LUKS2"; exit 1; }
           grep -aq OSMIUM-INSTALL-OK install-plain.log || { echo "::error::install failed"; tail -60 install-plain.log; exit 1; }
-          for l in luks plain; do
+          grep -aq OSMIUM-WINDOWS-INTACT install-win.log || { echo "::error::the NTFS partition did not survive the install next to it"; tail -60 install-win.log; exit 1; }
+          grep -aq OSMIUM-ESP-SHARED-OK install-win.log || { echo "::error::systemd-boot is not on the Windows ESP next to Windows Boot Manager"; exit 1; }
+          for l in luks plain win; do
             grep -aq OSMIUM-ESP-OK install-$l.log || { echo "::error::$l: no signed UKI / systemd-boot on the ESP"; exit 1; }
             echo "Install ($l, 4 cores): $(grep -ao 'OSMIUM-RUN-. {"done":true,"seconds":[0-9]*' install-$l.log | grep -o '[0-9]*$') s" >> "$GITHUB_STEP_SUMMARY"
           done
           if grep -aq 'OSMIUM-LEFT-' install-*.log; then echo "::warning::the installer left the target disk mounted or open"; fi
+      - name: Live desktop and installer window
+        run: |
+          iso=$(ls *.iso)
+          params=$(grep -rhom1 'archisobasedir=[^ ]* archisosearchuuid=[^ ]*' loader boot | head -1)
+          cp .github/ci/ui-test.sh ui.img; truncate -s 1M ui.img
+          qemu-img create -q -f qcow2 disk-ui.qcow2 1G; cp /usr/share/OVMF/OVMF_VARS_4M.fd vars-ui.fd
+          sudo env DISK=disk-ui.qcow2 VARS=vars-ui.fd MINUTES=10 .github/ci/vm.sh ui.log -cdrom "$iso" -vga virtio \
+            -drive if=none,id=s,file=ui.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
+            -kernel arch/boot/x86_64/vmlinuz-linux-zen -initrd arch/boot/x86_64/initramfs-linux-zen.img \
+            -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
+          sudo grep -a 'OSMIUM-' ui.log | grep -av SCREENSHOT | cut -c1-400 || true
+          sudo grep -ao 'OSMIUM-SCREENSHOT [A-Za-z0-9+/=]*' ui.log | head -1 | cut -d' ' -f2 | base64 -d > installer.png || true
+          sudo grep -aq OSMIUM-UI-RUNNING ui.log || { echo "::error::the installer window did not start in the live desktop"; exit 1; }
+          sudo grep -aq OSMIUM-UI-CLEAN ui.log || { echo "::error::the installer QML logged errors (see OSMIUM-UI-LOG lines)"; exit 1; }
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: installer-screenshot
+          path: installer.png
+          if-no-files-found: ignore
       - name: Boot the plain install (update, bless, broken update, rollback)
         run: |
           # Reboots are allowed: the test reboots twice itself, and the broken kernel three times.
@@ -220,6 +244,12 @@ jobs:
           need BLESS-OK "the updated entry was not blessed after a good boot"
           need BROKEN-BUILT "could not build the broken test kernel"
           need ROLLBACK-OK "a kernel that does not boot was not rolled back"
+      - name: Boot the install next to Windows
+        run: |
+          sudo env DISK=disk-win.qcow2 VARS=vars-win.fd MINUTES=8 .github/ci/vm.sh boot-win.log || true
+          sudo cat boot-win.log | cut -c1-400 || true
+          sudo grep -aq OSMIUM-BOOT-OK boot-win.log || { echo "::error::the install next to Windows did not boot"; exit 1; }
+          sudo grep -aq OSMIUM-XBOOTLDR-OK boot-win.log || { echo "::error::/boot is not the XBOOTLDR partition"; exit 1; }
       - name: Boot the LUKS install (Secure Boot, then TPM2 unlock)
         run: |
           tpm() { sudo pkill swtpm; sleep 1; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; }
@@ -250,4 +280,5 @@ jobs:
           path: |
             install-*.log
             boot-*.log
+            ui.log
             screen.ppm

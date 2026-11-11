@@ -33,6 +33,9 @@ ApplicationWindow {
     property var disks: []
     property string disk: ""
     property bool encrypt: false
+    // Next to Windows: shrink its NTFS partition and keep it bootable.
+    property bool alongside: false
+    property int sizeGb: 60
     property string passphrase: ""
     property string passphrase2: ""
     property string timezone: "Europe/Istanbul"
@@ -75,6 +78,7 @@ ApplicationWindow {
     function configText() {
         const kv = {
             disk: disk, encrypt: encrypt ? "1" : "0", passphrase: encrypt ? passphrase : "",
+            mode: alongside ? "yanina" : "sil", size_gb: String(sizeGb),
             hostname: hostname, username: username, fullname: fullname, password: password,
             timezone: timezone, locale: locale, keymap: keymap, xkblayout: xkbLayout,
             dots: dots, dots_mode: dotsMode,
@@ -85,6 +89,14 @@ ApplicationWindow {
     // First problem that blocks installing, or "".
     function problem() {
         if (disk === "") return "Bir disk seç."
+        if (alongside) {
+            const w = selectedDisk().windows
+            if (!w) return "Bu diskte Windows bulunamadı."
+            if (w.blocker === "bitlocker") return "Windows bölümü BitLocker ile şifreli: önce Windows'ta BitLocker'ı kapatın."
+            if (w.blocker === "hibernated") return "Windows hazırda bekletmede: Hızlı Başlatma'yı kapatıp Windows'u yeniden başlatın."
+            if (w.blocker !== "") return "Windows bölümü küçültülemiyor: Windows'ta chkdsk /f çalıştırın."
+            if (sizeGb * 1073741824 > w.available) return `Windows'tan en fazla ${Math.floor(w.available / 1073741824)} GB ayrılabilir.`
+        }
         if (encrypt && passphrase.length < 8) return "Şifreleme parolası en az 8 karakter olmalı."
         if (encrypt && passphrase !== passphrase2) return "Şifreleme parolaları aynı değil."
         if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) return "Kullanıcı adı küçük harf, rakam, - ve _ olmalı."
@@ -97,6 +109,10 @@ ApplicationWindow {
     function userFromName(name) {
         const map = { "ç": "c", "ğ": "g", "ı": "i", "ö": "o", "ş": "s", "ü": "u" }
         return name.toLowerCase().split(" ")[0].replace(/[çğıöşü]/g, c => map[c]).replace(/[^a-z0-9_-]/g, "").slice(0, 32)
+    }
+
+    function selectedDisk() {
+        return disks.find(d => d.path === disk) || {}
     }
 
     function sizeText(bytes) {
@@ -113,11 +129,13 @@ ApplicationWindow {
 
     Process {
         id: disksProc
-        command: ["osmium-install", "disks"]
+        // root: finding Windows means reading NTFS and mounting the ESP read-only.
+        command: ["sudo", "-n", "osmium-install", "disks"]
         stdout: StdioCollector {
             onStreamFinished: {
                 try { root.disks = JSON.parse(text) } catch (e) { root.disks = [] }
                 if (root.disks.length === 1) root.disk = root.disks[0].path
+                if (root.selectedDisk().windows) root.alongside = true
             }
         }
     }
@@ -307,8 +325,9 @@ ApplicationWindow {
                 title: "Kurulacak disk"
                 NoticeBox {
                     Layout.fillWidth: true
-                    materialIcon: "warning"
-                    text: "Seçilen diskteki her şey silinir."
+                    materialIcon: root.alongside ? "info" : "warning"
+                    text: root.alongside ? "Windows'a dokunulmaz: yalnızca bölümü küçültülür, açılışta Windows ya da OsmiumOS seçilir."
+                        : "Seçilen diskteki her şey silinir."
                 }
                 StyledText {
                     visible: root.disks.length === 0
@@ -321,9 +340,45 @@ ApplicationWindow {
                         required property var modelData
                         Layout.fillWidth: true
                         checked: root.disk === modelData.path
-                        onClicked: root.disk = modelData.path
+                        onClicked: {
+                            root.disk = modelData.path
+                            root.alongside = !!modelData.windows
+                        }
                         text: `${modelData.path}  ${modelData.model || ""}  (${root.sizeText(modelData.size)})`
                         description: (modelData.removable ? "çıkarılabilir, " : "") + (modelData.transport || "")
+                            + (modelData.windows ? ", Windows var" : "")
+                    }
+                }
+            }
+            ContentSection {
+                icon: "splitscreen"
+                title: "Windows"
+                visible: !!root.selectedDisk().windows
+                ConfigSwitch {
+                    buttonIcon: "splitscreen"
+                    text: "Windows'un yanına kur"
+                    checked: root.alongside
+                    onCheckedChanged: root.alongside = checked
+                }
+                ConfigSpinBox {
+                    visible: root.alongside
+                    icon: "storage"
+                    text: "OsmiumOS için alan (GB)"
+                    from: 20
+                    to: Math.max(20, Math.floor((root.selectedDisk().windows?.available ?? 0) / 1073741824))
+                    stepSize: 5
+                    value: root.sizeGb
+                    onValueChanged: root.sizeGb = value
+                }
+                NoticeBox {
+                    Layout.fillWidth: true
+                    visible: root.alongside && (root.selectedDisk().windows?.blocker ?? "") !== ""
+                    materialIcon: "warning"
+                    text: {
+                        const b = root.selectedDisk().windows?.blocker ?? ""
+                        if (b === "bitlocker") return "Windows bölümü BitLocker ile şifreli. Windows'ta BitLocker'ı kapatın, sonra kurulumu yeniden başlatın."
+                        if (b === "hibernated") return "Windows tam kapanmamış (Hızlı Başlatma). Windows'ta Hızlı Başlatma'yı kapatıp \"Yeniden başlat\" ile kapatın."
+                        return "Windows bölümünde hata var. Windows'ta chkdsk /f çalıştırın."
                     }
                 }
             }
@@ -542,7 +597,8 @@ ApplicationWindow {
                     wrapMode: Text.Wrap
                     color: Appearance.colors.colOnLayer1
                     visible: !root.finished
-                    text: `Disk: ${root.disk || "-"}${root.encrypt ? " (şifreli)" : ""}\n`
+                    text: `Disk: ${root.disk || "-"}${root.encrypt ? " (şifreli)" : ""}`
+                        + `${root.alongside ? ", Windows'un yanına " + root.sizeGb + " GB" : ""}\n`
                         + `Kullanıcı: ${root.username || "-"} @ ${root.hostname}\n`
                         + `Bölge: ${root.timezone}, ${root.locale}, klavye ${root.xkbLayout}\n`
                         + `Masaüstü: ${root.dots}${root.dots.startsWith("github:") ? " (" + root.dotsMode + ")" : ""}`

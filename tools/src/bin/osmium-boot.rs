@@ -30,7 +30,6 @@ use std::process::{Command, Stdio};
 const USAGE: &str = "kullanım: osmium-boot [kur [--ilk] | kontrol | ilk | tpm | guvenli | kurtar]";
 const SRC: &str = "/boot/osmium.efi";
 const ESP: &str = "/efi";
-const LINUX_DIR: &str = "/efi/EFI/Linux";
 const STATE: &str = "/var/lib/osmium/boot";
 const RESCUE: &str = "osmium-kurtarma.efi";
 const MAIN: &str = "osmium.efi";
@@ -141,6 +140,14 @@ fn qr_text(kernel: &str, failed: &[String], errors: &str) -> String {
 
 // ---------- system helpers ----------
 
+/// Where the UKIs live: the ESP, or the XBOOTLDR partition at /boot when the installer put
+/// OsmiumOS next to Windows (whose ESP is too small), as /etc/osmium/boot.conf says.
+fn linux_dir() -> PathBuf {
+    let conf = fs::read_to_string("/etc/osmium/boot.conf").unwrap_or_default();
+    let part = if conf.lines().any(|l| l.trim() == "xbootldr=/boot") { "/boot" } else { ESP };
+    Path::new(part).join("EFI/Linux")
+}
+
 fn efivar(name: &str, guid: &str) -> Option<Vec<u8>> {
     fs::read(format!("{EFIVARS}/{name}-{guid}")).ok()
 }
@@ -250,7 +257,7 @@ fn luks_device() -> Result<String> {
 fn install_uki(first: bool) -> Result {
     root_only()?;
     let src = Path::new(SRC);
-    let dir = Path::new(LINUX_DIR);
+    let dir = &linux_dir();
     // The live ISO and the update rehearsal container have no ESP: nothing to install there.
     if !first && !dir.is_dir() {
         return Ok(());
@@ -298,7 +305,7 @@ fn booted_image() -> Option<String> {
 }
 
 fn check() -> Result {
-    let dir = Path::new(LINUX_DIR);
+    let dir = &linux_dir();
     if !booted_image().is_some_and(|p| is_rescue_image(&p)) {
         return Ok(());
     }
@@ -391,7 +398,8 @@ fn secure_boot() -> Result {
     sign_systemd_boot();
     warn(run(Command::new("bootctl").args(["update", "--graceful"])));
     let mut files: Vec<PathBuf> = ["EFI/systemd/systemd-bootx64.efi", "EFI/BOOT/BOOTX64.EFI"].iter().map(|f| Path::new(ESP).join(f)).collect();
-    files.extend(entries(Path::new(LINUX_DIR)).into_iter().map(|(n, _)| Path::new(LINUX_DIR).join(n)));
+    let dir = linux_dir();
+    files.extend(entries(&dir).into_iter().map(|(n, _)| dir.join(n)));
     for f in files.iter().filter(|f| f.is_file()) {
         sign(f)?;
     }
@@ -407,12 +415,12 @@ fn secure_boot() -> Result {
 }
 
 fn status() -> Result {
-    let dir = Path::new(LINUX_DIR);
+    let dir = &linux_dir();
     let mut list = entries(dir);
     list.sort_by(|a, b| a.0.cmp(&b.0));
-    println!("Açılış girdileri ({LINUX_DIR}):");
+    println!("Açılış girdileri ({}):", dir.display());
     if list.is_empty() {
-        println!("  (yok ya da {ESP} bağlı değil)");
+        println!("  (yok ya da bölüm bağlı değil)");
     }
     for (name, kind) in &list {
         let what = match kind {
@@ -487,7 +495,7 @@ fn rollback_to(n: u32) -> Result {
     let uki = PathBuf::from(format!("{root}{SRC}"));
     if uki.is_file() {
         sign(&uki)?;
-        let dir = Path::new(LINUX_DIR);
+        let dir = &linux_dir();
         place(&uki, dir, MAIN)?;
         remove_mains(dir, Some(MAIN))?;
         let _ = fs::remove_file(dir.join(RESCUE));

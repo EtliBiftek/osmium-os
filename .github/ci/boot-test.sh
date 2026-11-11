@@ -22,6 +22,14 @@ checks() {
 }
 efibyte() { od -An -tu1 -j4 -N1 "/sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" 2>/dev/null | tr -d ' '; }
 
+if [ -e /root/sadece-acilis ]; then
+  # Next to Windows: one boot, /boot is our XBOOTLDR partition.
+  checks
+  [ "$(findmnt -n -o FSTYPE /boot)" = vfat ] && [ -e /boot/EFI/Linux/osmium.efi ] && say XBOOTLDR-OK
+  systemctl poweroff
+  exit
+fi
+
 if grep -q rd.luks /etc/kernel/cmdline; then
   dev=/dev/disk/by-uuid/$(sed -n 's/.*rd.luks.name=\([^=]*\)=.*/\1/p' /etc/kernel/cmdline)
   if [ ! -e /root/tpm-faz1 ]; then
