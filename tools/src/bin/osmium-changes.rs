@@ -389,6 +389,15 @@ fn undo(from: u32, root: bool) -> Result {
         return Ok(());
     }
     run(Command::new(&argv[0]).args(&argv[1..]))?;
+    // undochange also brings back /boot/osmium.efi; put that kernel on the ESP as well, as a
+    // counted entry, so a kernel that no longer boots falls back to the current one.
+    let mut boot = Command::new(if root { "osmium-boot" } else { "sudo" });
+    if !root {
+        boot.arg("osmium-boot");
+    }
+    if let Err(e) = run(boot.arg("kur")) {
+        eprintln!("osmium-changes: uyarı: açılış görüntüsü güncellenemedi: {e}");
+    }
     println!("Geri alındı. Çekirdek ya da servisler değiştiyse yeniden başlat.");
     Ok(())
 }

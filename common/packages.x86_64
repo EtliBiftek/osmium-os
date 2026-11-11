@@ -3,9 +3,15 @@ noto-fonts
 mesa
 pipewire
 wireplumber
-osmium-calamares-config
+osmium-tools
+rsync
+btrfs-progs
+snapper
+snap-pac
+networkmanager
 gptfdisk
 dosfstools
+efibootmgr
 cryptsetup
 squashfs-tools
 zram-generator

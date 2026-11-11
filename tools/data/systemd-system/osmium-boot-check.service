@@ -1,0 +1,18 @@
+[Unit]
+Description=OsmiumOS: roll back after an update that did not boot
+Documentation=man:systemd-boot(7)
+DefaultDependencies=no
+# Only when systemd-boot fell back to the rescue copy of the previous kernel.
+ConditionPathExists=|/efi/EFI/Linux/osmium-kurtarma.efi
+ConditionPathExists=|/boot/EFI/Linux/osmium-kurtarma.efi
+After=local-fs.target
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/osmium-boot kontrol
+StandardOutput=journal+console
+
+[Install]
+WantedBy=sysinit.target

@@ -66,6 +66,54 @@ fn read(path: &Path) -> Result<String> {
     io(fs::read_to_string(path), path)
 }
 
+/// OsmiumOS kernel, for the live ISO and therefore the installed system (the installer copies
+/// the live root). Its headers come from osmium-hw, which reads the installed pkgbase.
+const KERNEL: &str = "linux-zen";
+
+/// releng's package list with `linux` replaced by KERNEL.
+fn kernel_packages(list: &str) -> String {
+    list.lines().map(|l| if l.trim() == "linux" { KERNEL } else { l }).map(|l| format!("{l}\n")).collect()
+}
+
+/// A releng boot menu (grub, systemd-boot, syslinux) pointed at KERNEL's image and initramfs.
+fn kernel_boot_config(text: &str) -> String {
+    if text.contains(&format!("vmlinuz-{KERNEL}")) {
+        return text.to_string();
+    }
+    text.replace("vmlinuz-linux", &format!("vmlinuz-{KERNEL}"))
+        .replace("initramfs-linux.img", &format!("initramfs-{KERNEL}.img"))
+}
+
+/// Swaps releng's `linux` for KERNEL in the package list and in every boot menu.
+fn use_kernel(profile: &Path) -> Result {
+    let list = profile.join("packages.x86_64");
+    io(fs::write(&list, kernel_packages(&read(&list)?)), &list)?;
+    let mut dirs: Vec<PathBuf> = ["grub", "efiboot", "syslinux"].iter().map(|d| profile.join(d)).collect();
+    while let Some(dir) = dirs.pop() {
+        for e in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if let Ok(text) = fs::read_to_string(&path) {
+                let new = kernel_boot_config(&text);
+                if new != text {
+                    io(fs::write(&path, new), &path)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// releng's live initramfs HOOKS line without `microcode`: mkarchiso then puts the ucode images
+/// next to the kernel, where osmium-install finds them (see common/.../archiso.conf).
+fn live_hooks(releng: &str) -> Option<String> {
+    let line = releng.lines().map(str::trim).find(|l| l.starts_with("HOOKS=("))?;
+    let list = line.strip_prefix("HOOKS=(")?.strip_suffix(')')?;
+    let hooks: Vec<&str> = list.split_whitespace().filter(|h| *h != "microcode").collect();
+    Some(format!("HOOKS=({})", hooks.join(" ")))
+}
+
 fn iso(root: &Path, edition: &str) -> Result {
     let ed = root.join("editions").join(edition);
     if !ed.is_dir() {
@@ -76,6 +124,8 @@ fn iso(root: &Path, edition: &str) -> Result {
     remove_dir(&profile)?;
     io(fs::create_dir_all(&work), &work)?;
     run(Command::new("cp").args(["-a", "/usr/share/archiso/configs/releng"]).arg(&profile))?;
+    let initcpio = profile.join("airootfs/etc/mkinitcpio.conf.d/archiso.conf");
+    let hooks = live_hooks(&read(&initcpio)?).ok_or_else(|| format!("{}: no HOOKS line", initcpio.display()))?;
 
     for layer in [root.join("common"), ed] {
         let overlay = layer.join("airootfs");
@@ -87,6 +137,10 @@ fn iso(root: &Path, edition: &str) -> Result {
             append(profile.join("packages.x86_64"), &read(&pkgs)?)?;
         }
     }
+    // Our file replaces releng's; its HOOKS follow releng's, so archiso changes need no edit here.
+    let ours = read(&initcpio)?;
+    io(fs::write(&initcpio, format!("{hooks}\n{ours}")), &initcpio)?;
+    use_kernel(&profile)?;
     let key = public_key(root);
     if let Some(key) = &key {
         // pacstrap uses the build host's keyring.
@@ -180,15 +234,6 @@ fn packages(root: &Path) -> Result {
         build(root, &dir, &out, "-d", marker.as_deref(), &mut reused)?;
     }
 
-    // Calamares silently drops its Python modules when Python is missing at build time.
-    let calamares = pkg_files(&out)?
-        .into_iter()
-        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with("calamares-"))
-        .ok_or("calamares package missing")?;
-    if !output(Command::new("bsdtar").arg("-tf").arg(&calamares))?.contains("modules/bootloader/main.py") {
-        return Err("calamares package has no Python modules".into());
-    }
-
     // GitHub renames `:` in release asset names, so pacman would 404 on epoch packages.
     if let Some(p) = pkg_files(&out)?.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(':'))) {
         return Err(format!("{}: epoch in file name, the GitHub release repo cannot serve it; repackage without an epoch", p.display()));
@@ -267,8 +312,12 @@ fn import_pgp_keys(dir: &Path) -> Result {
     if keys.is_empty() {
         return Ok(());
     }
-    for server in ["hkps://keyserver.ubuntu.com", "hkps://keys.openpgp.org"] {
-        if succeeds(Command::new("sudo").args(["-u", "builder", "gpg", "--batch", "--keyserver", server, "--recv-keys"]).args(&keys)) {
+    // Keyservers fail now and then: two rounds over three servers, each try time-limited.
+    let servers = ["hkps://keyserver.ubuntu.com", "hkps://keys.openpgp.org", "hkps://pgp.surf.nl"];
+    for server in servers.iter().chain(servers.iter()) {
+        let mut gpg = Command::new("sudo");
+        gpg.args(["-u", "builder", "timeout", "90", "gpg", "--batch", "--keyserver", server, "--recv-keys"]).args(&keys);
+        if succeeds(&mut gpg) {
             return Ok(());
         }
     }
@@ -387,6 +436,14 @@ fn parse_marker(text: &str) -> Option<Vec<String>> {
 
 /// Downloads the named packages (and their signatures, where published) into `out`.
 /// False, with nothing left behind, unless all of them are there.
+/// curl for release downloads: a stalled transfer (under 1 KB/s for a minute) is retried
+/// instead of blocking the build (one once hung for 28 minutes).
+fn curl() -> Command {
+    let mut c = Command::new("curl");
+    c.args(["-fsL", "--connect-timeout", "20", "--speed-limit", "1024", "--speed-time", "60", "--retry", "3", "--retry-all-errors"]);
+    c
+}
+
 fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Result<bool> {
     let mut got = Vec::new();
     let mut all = true;
@@ -394,14 +451,14 @@ fn download(out: &Path, names: &[String], reused: &mut BTreeSet<PathBuf>) -> Res
         let dest = out.join(name);
         let url = format!("{}/{name}", repo_url());
         got.push(dest.clone());
-        if !succeeds(Command::new("curl").args(["-fsL", "--retry", "2", "-o"]).arg(&dest).arg(&url)) {
+        if !succeeds(curl().arg("-o").arg(&dest).arg(&url)) {
             all = false;
             break;
         }
         // Reuse its signature if one was published; otherwise it gets signed in packages().
         let sig = sig_path(&dest);
         got.push(sig.clone());
-        if !succeeds(Command::new("curl").arg("-fsL").arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
+        if !succeeds(curl().arg("-o").arg(&sig).arg(format!("{url}.sig"))) {
             remove_file(&sig)?;
         }
     }
@@ -424,7 +481,7 @@ fn build(root: &Path, dir: &Path, out: &Path, flags: &str, marker: Option<&str>,
     let published = if std::env::var("OSMIUM_REPO").is_err() {
         None
     } else if let Some(marker) = marker {
-        output(Command::new("curl").args(["-fsL", "--retry", "2"]).arg(format!("{}/{marker}", repo_url())))
+        output(curl().arg(format!("{}/{marker}", repo_url())))
             .ok()
             .and_then(|text| parse_marker(&text))
     } else {
@@ -478,6 +535,30 @@ fn sig_path(pkg: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kernel_is_swapped() {
+        assert_eq!(kernel_packages("base\nlinux\nlinux-firmware\n"), "base\nlinux-zen\nlinux-firmware\n");
+        let entry = "linux    /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux\ninitrd   /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux.img\n";
+        let zen = kernel_boot_config(entry);
+        assert_eq!(
+            zen,
+            "linux    /%INSTALL_DIR%/boot/%ARCH%/vmlinuz-linux-zen\ninitrd   /%INSTALL_DIR%/boot/%ARCH%/initramfs-linux-zen.img\n"
+        );
+        assert_eq!(kernel_boot_config(&zen), zen, "idempotent");
+        let memtest = "linux /boot/memtest86+/memtest.efi\n";
+        assert_eq!(kernel_boot_config(memtest), memtest);
+    }
+
+    #[test]
+    fn live_hooks_follow_releng() {
+        let releng = "# comment\nHOOKS=(base udev microcode modconf kms memdisk archiso block filesystems keyboard)\nCOMPRESSION=\"xz\"\n";
+        assert_eq!(
+            live_hooks(releng).as_deref(),
+            Some("HOOKS=(base udev modconf kms memdisk archiso block filesystems keyboard)")
+        );
+        assert_eq!(live_hooks("COMPRESSION=\"xz\"\n"), None);
+    }
 
     #[test]
     fn srcinfo_pgp_keys() {

@@ -3,3 +3,8 @@ title=illogical-impulse
 description=Material You masaüstü: yapay zekâ kenar çubuğu, ayarlar uygulaması, canlı genel bakış.
 source=https://github.com/end-4/dots-hyprland/tree/2f2a376fdb2ad738bf55f693dd0b474b64bb0ab8
 license=GPL-3.0-or-later
+# ii builds its whole Material palette from an accent color or a wallpaper (matugen).
+renk.uygula=$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh --color {renk}
+duvar.uygula=$HOME/.config/quickshell/ii/scripts/colors/switchwall.sh --image {duvar}
+# Super+L locks (loginctl lock-session); a mixed-in lock screen takes that key.
+kilit.tus=SUPER, L

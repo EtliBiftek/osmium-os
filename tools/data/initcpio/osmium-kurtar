@@ -1,0 +1,20 @@
+#!/bin/bash
+# mkinitcpio install hook (systemd initramfs): the OsmiumOS rescue menu for failures before the
+# root is mounted (disk not found, cannot unlock). It shows the errors as a QR code and can
+# make systemd-boot start the previous kernel once (osmium-boot kurtar).
+
+build() {
+    add_binary /usr/bin/osmium-boot
+    add_binary qrencode
+    add_binary chattr
+    add_binary journalctl
+    add_binary uname
+    add_file /usr/share/osmium/initcpio/emergency-osmium.conf /etc/systemd/system/emergency.service.d/osmium-rescue.conf
+}
+
+help() {
+    cat <<HELPEOF
+OsmiumOS rescue menu in the initramfs: error summary with a QR code, boot the previous kernel once.
+Needs the systemd hook.
+HELPEOF
+}

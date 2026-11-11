@@ -64,7 +64,14 @@ prepare() {
   sed -i 's|swww init && swww img|awww-daemon \& sleep 1 \&\& awww img|' hypr/execs.conf
   sed -i 's/\bswww\b/awww/g' eww/scripts/switchwall
   # Hyprland's socket dir moved from /tmp/hypr to $XDG_RUNTIME_DIR/hypr (hyprland-rust follows that).
+  # At the pin all 11 uses are `socat UNIX-CONNECT:/tmp/hypr/$SIG/.socket2.sock` in eww/scripts; the
+  # events they read (workspace, focusedmon, create/destroyworkspace, movewindow, monitor*,
+  # activewindow, activelayout) are all emitted by hyprland-rust. Fail if any other form appears.
   grep -rlF '/tmp/hypr/' eww | xargs -r sed -i 's|UNIX-CONNECT:/tmp/hypr/|UNIX-CONNECT:"$XDG_RUNTIME_DIR"/hypr/|'
+  if grep -rnF '/tmp/hypr' eww hypr ../.local; then
+    echo "ERROR: m3ww still uses /tmp/hypr (see above)" >&2
+    return 1
+  fi
   # Upstream reserved bar space with `monitor = addreserved` (unimplemented here); use an
   # exclusive layer-shell zone instead.
   sed -i 's/^\(\s*\):stacking "fg"/&\n\1:exclusive true/' eww/eww.yuck
@@ -102,6 +109,15 @@ title=m3ww (Material You EWW)
 description=end-4'ün arşivlenmiş m3ww masaüstü stili: Material Design 3 renkli EWW üst çubuğu, yan paneller ve bildirimler.
 source=$url/tree/$_commit/m3ww
 license=GPL-3.0-or-later
+# Mixing (osmium-dots karistir): its EWW bar, and wallpapers through awww.
+cubuk=eww daemon && eww open bar
+cubuk.dosyalar=.config/eww
+# its launcher and lock screen
+baslatici=fuzzel
+baslatici.dosyalar=.config/fuzzel
+kilit=gtklock
+kilit.dosyalar=.config/gtklock
+duvar.uygula=awww img {duvar}
 INFO
   # The archive branch carries no LICENSE file; upstream (main) is GPL-3.0, which is what we declare.
 }

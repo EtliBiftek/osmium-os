@@ -5,6 +5,18 @@
 //!   osmium-dots apply <id|github:owner/repo> [--mode config|script]
 //!   osmium-dots current                                what was applied last
 //!   osmium-dots session                                login entry: default dots on first login, then hyprland-rust
+//!   osmium-dots onizle <id> [--png <dosya>] [--sure <sn>]  try a dot in a window (nested hyprland-rust)
+//!   osmium-dots parcalar <id>                          which parts of a dot can be mixed
+//!   osmium-dots karistir <ad> <taban> <parça>=<id>...  a new dot: <taban> with parts of others
+//!
+//! Mixing. A dot's `info` may declare parts: `renk=#rrggbb` (its accent color), `duvar=<image>`
+//! (its wallpaper), and `cubuk`, `bildirim`, `baslatici`, `kilit` (bar, notifications, launcher,
+//! lock screen) as `<part>=<command>` with optional `<part>.dosyalar=<paths under $HOME>`. The base
+//! says how it takes them: `renk.uygula=` / `duvar.uygula=` (commands with `{renk}` / `{duvar}`),
+//! `<part>.durdur=<process>` for bar and notifications (its own is stopped), `<part>.tus=MODS, KEY`
+//! for launcher and lock screen (that key is rebound). See `PARTS`. A mix is a
+//! user dot in ~/.local/share/osmium/dots/<ad>/ that inherits the base; its parts are applied by
+//! a helper the session starts once the compositor runs (`karisim-baslat`).
 //!
 //! Built-in dots live in /usr/share/osmium/dots/<id>/: `info` (key=value), `home/` (mirrors
 //! $HOME), optional `post-apply` (run as the user). `inherits=<id>` applies that one first.
@@ -51,7 +63,11 @@ fn main() {
         }
         ["session"] => session(),
         ["pending-run"] => pending_run(),
-        _ => Err("usage: osmium-dots list [--json] | search [--json] <words> | apply <id|github:owner/repo> [--mode config|script] | current | session".into()),
+        ["onizle", id, ref rest @ ..] => preview(id, rest),
+        ["parcalar", id] => parts(id),
+        ["karistir", name, base, ref picks @ ..] if !picks.is_empty() => mix(name, base, picks),
+        ["karisim-baslat"] => mix_start(),
+        _ => Err("usage: osmium-dots list [--json] | search [--json] <words> | apply <id|github:owner/repo> [--mode config|script] | current | session | onizle <id> [--png <dosya>] [--sure <sn>] | parcalar <id> | karistir <ad> <taban> <parça>=<id>...".into()),
     };
     exit_on_err("osmium-dots", res);
 }
@@ -82,8 +98,23 @@ fn parse_info(text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The directory of dot `id`: the user's own (mixes) first, then the system's.
+fn dot_dir(dir: &Path, id: &str) -> PathBuf {
+    if dir == Path::new(DOTS_DIR)
+        && let Ok(user) = user_dots_dir()
+        && user.join(id).join("info").is_file()
+    {
+        return user;
+    }
+    dir.to_path_buf()
+}
+
+fn user_dots_dir() -> Result<PathBuf> {
+    Ok(osmium_tools::data_home()?.join("osmium/dots"))
+}
+
 fn builtin(dir: &Path, id: &str) -> Result<BTreeMap<String, String>> {
-    let p = dir.join(id).join("info");
+    let p = dot_dir(dir, id).join(id).join("info");
     let text = fs::read_to_string(&p).map_err(|_| format!("no built-in dots named `{id}` (see: osmium-dots list)"))?;
     Ok(parse_info(&text))
 }
@@ -105,10 +136,13 @@ fn list(json: bool) -> Result {
     let dir = Path::new(DOTS_DIR);
     let mut ids: Vec<String> = fs::read_dir(dir)
         .map_err(|e| format!("{DOTS_DIR}: {e}"))?
+        .chain(user_dots_dir().ok().and_then(|u| fs::read_dir(u).ok()).into_iter().flatten())
         .flatten()
         .filter(|e| e.path().join("info").is_file())
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
+    ids.sort();
+    ids.dedup();
     // Default first, the rest by name.
     ids.sort_by_key(|id| (id != DEFAULT, id.clone()));
     let mut items = Vec::new();
@@ -116,7 +150,9 @@ fn list(json: bool) -> Result {
         let info = builtin(dir, id)?;
         let get = |k: &str| info.get(k).cloned().unwrap_or_default();
         if json {
-            let preview = dir.join(id).join("preview.png");
+            // A shipped preview, else one `onizle --png` cached.
+            let cached = home().map(|h| h.join(".cache/osmium/onizleme").join(format!("{id}.png"))).unwrap_or_default();
+            let preview = Some(dot_dir(dir, id).join(id).join("preview.png")).filter(|p| p.is_file()).unwrap_or(cached);
             items.push(format!(
                 "{{\"id\":{},\"title\":{},\"description\":{},\"source\":{},\"preview\":{}}}",
                 js(id),
@@ -200,7 +236,7 @@ fn copy_tree(tree: &Path, dest: &Path) -> Result {
 
 fn apply_builtin(dir: &Path, id: &str, home: &Path) -> Result {
     let ids = chain(dir, id)?;
-    let trees: Vec<PathBuf> = ids.iter().map(|i| dir.join(i).join("home")).collect();
+    let trees: Vec<PathBuf> = ids.iter().map(|i| dot_dir(dir, i).join(i).join("home")).collect();
     let mut names: Vec<String> = trees.iter().flat_map(|t| config_entries(t)).collect();
     names.sort();
     names.dedup();
@@ -213,12 +249,14 @@ fn apply_builtin(dir: &Path, id: &str, home: &Path) -> Result {
         }
     }
     for i in &ids {
-        let hook = dir.join(i).join("post-apply");
+        let hook = dot_dir(dir, i).join(i).join("post-apply");
         if hook.is_file() && !succeeds(Command::new("sh").arg(&hook).env("HOME", home)) {
             eprintln!("osmium-dots: warning: {} failed", hook.display());
         }
     }
     set_current(id)?;
+    // A new mix gets its parts on the next start of the helper.
+    let _ = fs::remove_file(state_file("karisim-uygulandi")?);
     println!("Uygulandı: {id}. Oturumu kapatıp açınca tamamen geçer.");
     Ok(())
 }
@@ -451,6 +489,13 @@ fn session() -> Result {
     {
         eprintln!("osmium-dots: {e}");
     }
+    // A mixed dot: the helper applies its parts once the compositor runs.
+    if current().is_some_and(|c| !c.starts_with("github:") && !mix_parts(&builtin(Path::new(DOTS_DIR), &c).unwrap_or_default()).is_empty()) {
+        let me = std::env::current_exe().map_err(|e| e.to_string())?;
+        let _ = Command::new(me).arg("karisim-baslat").spawn();
+    }
+    // Detached: tells once, after the desktop is up, how to unlock the disk with the TPM.
+    let _ = Command::new("osmium-boot").arg("ipucu").stdout(std::process::Stdio::null()).spawn();
     if state_file("dots-pending")?.is_file() {
         // Detached helper: waits for the compositor, then opens a terminal to ask.
         let me = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -499,6 +544,306 @@ fn pending_run() -> Result {
     } else {
         Err(format!("hyprctl dispatch exec: {}", reply.trim()))
     }
+}
+
+// ---------- preview ----------
+
+/// Runs the dot in a nested hyprland-rust (winit backend: a window on this desktop) with a
+/// throwaway HOME, so nothing of the user's own setup changes. `--png` waits and screenshots it.
+fn preview(id: &str, rest: &[&str]) -> Result {
+    let (mut png, mut secs) = (None, 15u64);
+    let mut it = rest.iter();
+    while let Some(a) = it.next() {
+        match (*a, it.next()) {
+            ("--png", Some(p)) => png = Some(PathBuf::from(p)),
+            ("--sure", Some(s)) => secs = s.parse().map_err(|_| format!("geçersiz süre `{s}`"))?,
+            _ => return Err("kullanım: osmium-dots onizle <id> [--png <dosya>] [--sure <sn>]".into()),
+        }
+    }
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return Err("önizleme bir Wayland masaüstü içinde açılır (WAYLAND_DISPLAY yok)".into());
+    }
+    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").ok_or("XDG_RUNTIME_DIR yok")?);
+    let tmp = runtime.join("osmium-onizle").join(format!("{}-{}", id.replace(['/', ':'], "_"), std::process::id()));
+    let res = preview_in(id, &tmp, &runtime, png.as_deref(), secs);
+    let _ = fs::remove_dir_all(&tmp);
+    res
+}
+
+fn preview_in(id: &str, tmp: &Path, runtime: &Path, png: Option<&Path>, secs: u64) -> Result {
+    let home = tmp.join("home");
+    fs::create_dir_all(&home).map_err(|e| format!("{}: {e}", home.display()))?;
+    let me = std::env::current_exe().map_err(|e| e.to_string())?;
+    let with_home = |c: &mut Command| {
+        c.env("HOME", &home)
+            .env("XDG_CONFIG_HOME", home.join(".config"))
+            .env("XDG_DATA_HOME", home.join(".local/share"))
+            .env("XDG_STATE_HOME", home.join(".local/state"))
+            .env("XDG_CACHE_HOME", home.join(".cache"));
+    };
+    // The user's mixes live in their own data dir: copy the one asked for (and its parts).
+    if let Ok(user) = user_dots_dir()
+        && user.join(id).join("info").is_file()
+    {
+        copy_tree(&user.join(id), &home.join(".local/share/osmium/dots").join(id))?;
+    }
+    let mut apply = Command::new(&me);
+    with_home(&mut apply);
+    osmium_tools::run(apply.args(["apply", id]))?;
+    let mut comp = Command::new("dbus-run-session");
+    with_home(&mut comp);
+    comp.args(["--", "hyprland-rust", "--backend", "winit"])
+        .env("XDG_CURRENT_DESKTOP", "Hyprland")
+        .env_remove("HYPRLAND_INSTANCE_SIGNATURE")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let started = SystemTime::now();
+    let mut child = comp.spawn().map_err(|e| format!("hyprland-rust: {e}"))?;
+    let Some(png) = png else {
+        println!("Önizleme penceresi açıldı; kapatınca geçici dosyalar silinir.");
+        let _ = child.wait();
+        return Ok(());
+    };
+    std::thread::sleep(std::time::Duration::from_secs(secs));
+    let socket = nested_socket(runtime, started);
+    let shot = match &socket {
+        Some(s) => osmium_tools::run(Command::new("grim").env("WAYLAND_DISPLAY", s).arg(png)),
+        None => Err("önizleme bileşimcisi başlamadı".into()),
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    shot?;
+    println!("Önizleme: {}", png.display());
+    Ok(())
+}
+
+/// The Wayland socket of the compositor instance started after `since`, from its
+/// `hyprland.lock` (pid, then socket name).
+fn nested_socket(runtime: &Path, since: SystemTime) -> Option<String> {
+    let dirs = fs::read_dir(runtime.join("hypr")).ok()?.flatten();
+    let newest = dirs
+        .filter(|e| e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t >= since))
+        .max_by_key(|e| e.metadata().and_then(|m| m.modified()).ok())?;
+    let lock = fs::read_to_string(newest.path().join("hyprland.lock")).ok()?;
+    lock.lines().nth(1).map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+// ---------- mixing ----------
+
+/// Mixable parts, by how they are taken over:
+/// - value parts (`renk`, `duvar`): the base applies the value with `<part>.uygula`;
+/// - process parts (`cubuk`, `bildirim`): the source's command (`<part>=<command>`) runs after
+///   the base's own process (`<part>.durdur`) was stopped;
+/// - key parts (`baslatici`, `kilit`): the base's key (`<part>.tus`, e.g. `SUPER, L`) is rebound
+///   to the source's command (`<part>=<command>`).
+///
+/// Process and key parts bring the source's files along when it lists them (`<part>.dosyalar`).
+const PARTS: &[&str] = &["renk", "duvar", "cubuk", "bildirim", "baslatici", "kilit"];
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Kind {
+    Value,
+    Process,
+    Key,
+}
+
+fn kind(part: &str) -> Kind {
+    match part {
+        "cubuk" | "bildirim" => Kind::Process,
+        "baslatici" | "kilit" => Kind::Key,
+        _ => Kind::Value,
+    }
+}
+
+/// The parts a dot's info offers: (part, value).
+fn offered(info: &BTreeMap<String, String>) -> Vec<(&'static str, String)> {
+    PARTS.iter().filter_map(|p| info.get(*p).filter(|v| !v.is_empty()).map(|v| (*p, v.clone()))).collect()
+}
+
+/// What a base accepts: each part needs its way in.
+fn accepts(info: &BTreeMap<String, String>, part: &str) -> bool {
+    let key = match kind(part) {
+        Kind::Value => "uygula",
+        Kind::Process => "durdur",
+        Kind::Key => "tus",
+    };
+    PARTS.contains(&part) && info.get(&format!("{part}.{key}")).is_some_and(|v| !v.is_empty())
+}
+
+/// `MODS, KEY` as hyprlang writes a bind's first two fields.
+fn valid_key(k: &str) -> bool {
+    k.split_once(',').is_some_and(|(m, key)| {
+        m.chars().all(|c| c.is_ascii_alphanumeric() || " _+".contains(c)) && !key.trim().is_empty()
+            && key.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// `karisim.<part>` entries of a mix.
+fn mix_parts(info: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    info.iter().filter_map(|(k, v)| k.strip_prefix("karisim.").map(|p| (p.to_string(), v.clone()))).collect()
+}
+
+fn valid_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 40 && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+fn valid_color(c: &str) -> bool {
+    c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|h| h.is_ascii_hexdigit())
+}
+
+/// Every chain member's info merged, the dot itself last (so its keys win).
+fn resolved_info(dir: &Path, id: &str) -> Result<BTreeMap<String, String>> {
+    let mut all = BTreeMap::new();
+    for i in chain(dir, id)? {
+        all.extend(builtin(dir, &i)?);
+    }
+    Ok(all)
+}
+
+fn parts(id: &str) -> Result {
+    let info = resolved_info(Path::new(DOTS_DIR), id)?;
+    let offer = offered(&info);
+    println!("{id} başkasına verebilir: {}", if offer.is_empty() { "-".into() } else { offer.iter().map(|(p, _)| *p).collect::<Vec<_>>().join(", ") });
+    let take: Vec<&str> = PARTS.iter().copied().filter(|p| accepts(&info, p)).collect();
+    println!("{id} başkasından alabilir: {}", if take.is_empty() { "-".into() } else { take.join(", ") });
+    Ok(())
+}
+
+/// The info file of a mix, after checking that the base takes each part and the source has it.
+/// One part picked for a mix: what the info records and which files come along.
+#[derive(Debug, PartialEq, Clone)]
+struct Pick {
+    part: String,
+    from: String,
+    /// Recorded as `karisim.<part>`: the value, or the command that starts or opens the part.
+    value: String,
+    /// Paths under $HOME copied from the source dot.
+    files: Vec<String>,
+}
+
+/// What the source dot gives for `part`.
+fn pick(src: &BTreeMap<String, String>, part: &str, from: &str) -> Result<Pick> {
+    let get = |k: &str| src.get(k).filter(|v| !v.is_empty()).cloned();
+    let value = get(part).ok_or_else(|| format!("`{from}` {part} parçası vermiyor"))?;
+    let split = |v: Option<String>| v.map(|v| v.split_whitespace().map(String::from).collect()).unwrap_or_default();
+    let files = match kind(part) {
+        Kind::Value => Vec::new(),
+        Kind::Process | Kind::Key => split(get(&format!("{part}.dosyalar"))),
+    };
+    Ok(Pick { part: part.into(), from: from.into(), value, files })
+}
+
+fn mix_info(name: &str, base: &BTreeMap<String, String>, base_id: &str, picks: &[Pick]) -> Result<String> {
+    let mut text = format!("name={name}\ntitle={name} ({base_id} karışımı)\ninherits={base_id}\n");
+    let mut desc = Vec::new();
+    for p in picks {
+        if !accepts(base, &p.part) {
+            return Err(format!("`{base_id}` {} parçasını başkasından alamıyor (bkz: osmium-dots parcalar {base_id})", p.part));
+        }
+        if p.value.contains('\n') || (p.part == "renk" && !valid_color(&p.value)) {
+            return Err(format!("`{}`: geçersiz {} değeri", p.from, p.part));
+        }
+        text += &format!("karisim.{}={}\n", p.part, p.value);
+        desc.push(format!("{}: {}", p.part, p.from));
+    }
+    text += &format!("description={base_id} tabanı; {}\nlicense=GPL-3.0-or-later\n", desc.join(", "));
+    Ok(text)
+}
+
+fn mix(name: &str, base_id: &str, picks: &[&str]) -> Result {
+    if !valid_name(name) {
+        return Err("karışım adı küçük harf, rakam ve - olmalı (en çok 40 karakter)".into());
+    }
+    let dir = Path::new(DOTS_DIR);
+    if dir.join(name).join("info").is_file() {
+        return Err(format!("`{name}` hazır bir dotun adı; başka bir ad seçin"));
+    }
+    let base = resolved_info(dir, base_id)?;
+    let mut resolved = Vec::new();
+    for p in picks {
+        let (part, from) = p.split_once('=').ok_or_else(|| format!("`{p}`: <parça>=<dot> bekleniyordu"))?;
+        if !PARTS.contains(&part) {
+            return Err(format!("bilinmeyen parça `{part}` ({})", PARTS.join(", ")));
+        }
+        resolved.push(pick(&resolved_info(dir, from)?, part, from)?);
+    }
+    let info = mix_info(name, &base, base_id, &resolved)?;
+    let out = user_dots_dir()?.join(name);
+    let _ = fs::remove_dir_all(&out);
+    fs::create_dir_all(out.join("home")).map_err(|e| format!("{}: {e}", out.display()))?;
+    // The picked parts' files come along; everything else is the base's.
+    for p in &resolved {
+        for rel in &p.files {
+            if rel.starts_with('/') || rel.contains("..") {
+                return Err(format!("`{}`: geçersiz yol `{rel}`", p.from));
+            }
+            let src = chain(dir, &p.from)?.iter().rev().map(|i| dot_dir(dir, i).join(i).join("home").join(rel)).find(|x| x.exists());
+            let src = src.ok_or_else(|| format!("`{}`: {rel} bulunamadı", p.from))?;
+            let dest = out.join("home").join(rel);
+            fs::create_dir_all(dest.parent().unwrap()).map_err(|e| format!("{}: {e}", dest.display()))?;
+            osmium_tools::run(Command::new("cp").arg("-a").arg("--no-preserve=ownership").arg(&src).arg(&dest))?;
+        }
+    }
+    fs::write(out.join("info"), info).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!("Karışım hazır: {name}. Denemek için: osmium-dots onizle {name}   Uygulamak için: osmium-dots apply {name}");
+    Ok(())
+}
+
+/// A base's apply command with the part's value filled in, run through `sh -c` with the
+/// value as "$1" so it is never parsed as shell text.
+fn apply_command(template: &str, part: &str) -> String {
+    template.replace(&format!("{{{part}}}"), "\"$1\"")
+}
+
+/// `hyprctl keyword` calls that move `key` to `command`: the base's bind goes first.
+fn rebind(key: &str, command: &str) -> Option<[String; 2]> {
+    valid_key(key).then(|| [key.to_string(), format!("{key}, exec, {command}")])
+}
+
+/// After login: give the compositor the mixed-in parts. Colors and wallpaper once per mix;
+/// processes and keys on every login (the base's own process is stopped first).
+fn mix_start() -> Result {
+    let Some(id) = current() else { return Ok(()) };
+    let info = resolved_info(Path::new(DOTS_DIR), &id)?;
+    let parts = mix_parts(&info);
+    for _ in 0..60 {
+        if succeeds(Command::new("hyprctl").arg("version")) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    // Shells set up their color tools and binds during the first seconds.
+    std::thread::sleep(std::time::Duration::from_secs(5));
+    let done = state_file("karisim-uygulandi")?;
+    let first = fs::read_to_string(&done).map(|d| d.trim() != id).unwrap_or(true);
+    for (part, value) in &parts {
+        match kind(part) {
+            Kind::Value if first => {
+                if let Some(t) = info.get(&format!("{part}.uygula")) {
+                    let ok = succeeds(Command::new("sh").args(["-c", &apply_command(t, part), "osmium-dots", value]));
+                    if !ok {
+                        eprintln!("osmium-dots: {part} uygulanamadı");
+                    }
+                }
+            }
+            Kind::Value => {}
+            Kind::Process => {
+                if let Some(own) = info.get(&format!("{part}.durdur")) {
+                    succeeds(Command::new("pkill").args(["-x", own]));
+                }
+                let _ = output(Command::new("hyprctl").args(["dispatch", "exec", value]));
+            }
+            Kind::Key => match info.get(&format!("{part}.tus")).and_then(|k| rebind(k, value)) {
+                Some([unbind, bind]) => {
+                    let _ = output(Command::new("hyprctl").args(["keyword", "unbind", &unbind]));
+                    let _ = output(Command::new("hyprctl").args(["keyword", "bind", &bind]));
+                }
+                None => eprintln!("osmium-dots: {part}.tus geçersiz"),
+            },
+        }
+    }
+    let _ = fs::write(&done, &id);
+    Ok(())
 }
 
 // ---------- GitHub search ----------
@@ -728,6 +1073,78 @@ impl Parser<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn info(text: &str) -> BTreeMap<String, String> {
+        parse_info(text)
+    }
+
+    const SYNTH: &str = "name=synthwave\nrenk=#ff2a6d\nduvar=/usr/share/backgrounds/osmium/synthwave.png\n\
+        cubuk=ironbar\ncubuk.dosyalar=.config/ironbar\ncubuk.durdur=ironbar\nduvar.uygula=awww img {duvar}\n\
+        bildirim=swaync\nbildirim.durdur=swaync\n\
+        baslatici=anyrun\nbaslatici.dosyalar=.config/anyrun\nbaslatici.tus=SUPER, Space\n\
+        kilit=hyprlock\nkilit.dosyalar=.config/hypr/hyprlock.conf\nkilit.tus=SUPER, L\n";
+
+    #[test]
+    fn parts_offered_and_accepted() {
+        let synth = info(SYNTH);
+        let ii = info("name=ii\nrenk.uygula=x --color {renk}\nduvar.uygula=x --image {duvar}\nkilit.tus=SUPER, L\n");
+        let offer: Vec<&str> = offered(&synth).iter().map(|(p, _)| *p).collect();
+        assert_eq!(offer, ["renk", "duvar", "cubuk", "bildirim", "baslatici", "kilit"]);
+        assert!(offered(&ii).is_empty());
+        for (part, yes) in [("renk", true), ("duvar", true), ("kilit", true), ("cubuk", false), ("bildirim", false), ("baslatici", false)] {
+            assert_eq!(accepts(&ii, part), yes, "ii {part}");
+        }
+        for part in ["cubuk", "bildirim", "baslatici", "kilit", "duvar"] {
+            assert!(accepts(&synth, part), "synthwave {part}");
+        }
+        assert!(!accepts(&synth, "renk") && !accepts(&synth, "bilinmeyen"));
+    }
+
+    #[test]
+    fn picks_by_kind() {
+        let synth = info(SYNTH);
+        let bar = pick(&synth, "cubuk", "synthwave").unwrap();
+        assert_eq!((bar.value.as_str(), bar.files.clone()), ("ironbar", vec![".config/ironbar".to_string()]));
+        let lock = pick(&synth, "kilit", "synthwave").unwrap();
+        assert_eq!((lock.value.as_str(), lock.files.clone()), ("hyprlock", vec![".config/hypr/hyprlock.conf".to_string()]));
+        let color = pick(&synth, "renk", "synthwave").unwrap();
+        assert!(color.files.is_empty() && color.value == "#ff2a6d");
+        let notify = pick(&synth, "bildirim", "synthwave").unwrap();
+        assert!(notify.value == "swaync" && notify.files.is_empty(), "no files needed");
+        assert!(pick(&info(""), "kilit", "y").is_err());
+    }
+
+    #[test]
+    fn mix_info_checks_the_base() {
+        let ii = info("renk.uygula=x --color {renk}\nduvar.uygula=x --image {duvar}\nkilit.tus=SUPER, L\n");
+        let synth = info(SYNTH);
+        let picks = vec![pick(&synth, "renk", "synthwave").unwrap(), pick(&synth, "kilit", "synthwave").unwrap()];
+        let parsed = info(&mix_info("neon", &ii, "ii", &picks).unwrap());
+        assert_eq!(parsed["inherits"], "ii");
+        assert_eq!(parsed["karisim.renk"], "#ff2a6d");
+        assert_eq!(parsed["karisim.kilit"], "hyprlock");
+        assert_eq!(mix_parts(&parsed).len(), 2);
+        let bar = vec![pick(&synth, "cubuk", "synthwave").unwrap()];
+        assert!(mix_info("x", &ii, "ii", &bar).unwrap_err().contains("cubuk"));
+        let bad = vec![Pick { part: "renk".into(), from: "s".into(), value: "pink; rm -rf ~".into(), files: vec![] }];
+        assert!(mix_info("x", &ii, "ii", &bad).is_err());
+        assert!(valid_name("neon-ii") && !valid_name("Neon") && !valid_name("../x") && !valid_name(""));
+    }
+
+    #[test]
+    fn rebinds_a_key() {
+        assert_eq!(rebind("SUPER, L", "hyprlock"), Some(["SUPER, L".to_string(), "SUPER, L, exec, hyprlock".to_string()]));
+        assert_eq!(rebind("SUPER + SHIFT, Space", "anyrun").unwrap()[1], "SUPER + SHIFT, Space, exec, anyrun");
+        for bad in ["SUPER", "SUPER, ", "SUPER;rm, L", "SUPER, L; x"] {
+            assert_eq!(rebind(bad, "x"), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn apply_command_passes_the_value_as_an_argument() {
+        assert_eq!(apply_command("switchwall.sh --image {duvar}", "duvar"), "switchwall.sh --image \"$1\"");
+        assert_eq!(apply_command("awww img {duvar} --x", "duvar"), "awww img \"$1\" --x");
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("osmium-dots-{name}-{}", std::process::id()));

@@ -42,6 +42,8 @@ struct Host {
     sockets: Vec<String>,
     x11: bool,
     dri: bool,
+    /// NVIDIA proprietary device nodes (`/dev/nvidia*`, `/dev/nvidia-caps/*`).
+    nvidia: Vec<String>,
     env: Vec<(String, String)>,
 }
 
@@ -130,10 +132,14 @@ fn nspawn_argv(packages: &[String], command: &[String], who: &Invoker, host: &Ho
         a.push(format!("--bind-ro={X11_DIR}"));
     }
     if host.dri {
-        // shortcut: only DRM render nodes are passed, so NVIDIA's proprietary driver
-        // falls back to software rendering; bind /dev/nvidia* too if that matters.
         a.push(format!("--bind={DRI_DIR}"));
         a.push("--property=DeviceAllow=char-drm rw".into());
+    }
+    // NVIDIA's proprietary driver needs its own nodes next to the DRM ones, or GL
+    // falls back to software rendering.
+    for node in host.nvidia.iter().filter(|n| mountable(n)) {
+        a.push(format!("--bind={node}"));
+        a.push(format!("--property=DeviceAllow={node} rw"));
     }
     a.extend(host.env.iter().map(|(k, v)| format!("--setenv={k}={v}")));
     a.extend(["--", "/usr/bin/bash", "-c", INNER, "osmium-try"].map(String::from));
@@ -156,7 +162,26 @@ fn probe_host() -> Host {
             .collect(),
         None => Vec::new(),
     };
-    Host { runtime_dir, sockets, x11: Path::new(X11_DIR).is_dir(), dri: Path::new(DRI_DIR).is_dir(), env }
+    let nvidia = nvidia_nodes(&list_dir("/dev"), &list_dir("/dev/nvidia-caps"));
+    Host { runtime_dir, sockets, x11: Path::new(X11_DIR).is_dir(), dri: Path::new(DRI_DIR).is_dir(), nvidia, env }
+}
+
+fn list_dir(dir: &str) -> Vec<String> {
+    let entries = std::fs::read_dir(dir).into_iter().flatten().flatten();
+    entries.map(|e| e.file_name().to_string_lossy().into_owned()).collect()
+}
+
+/// `/dev/nvidia0`, `nvidiactl`, `nvidia-modeset`, `nvidia-uvm(-tools)` and the
+/// capability nodes, from the names in /dev and /dev/nvidia-caps. Sorted.
+fn nvidia_nodes(dev: &[String], caps: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = dev
+        .iter()
+        .filter(|n| n.starts_with("nvidia") && *n != "nvidia-caps")
+        .map(|n| format!("/dev/{n}"))
+        .chain(caps.iter().filter(|n| n.starts_with("nvidia-cap")).map(|n| format!("/dev/nvidia-caps/{n}")))
+        .collect();
+    v.sort();
+    v
 }
 
 fn try_packages(args: &[String]) -> Result {
@@ -215,11 +240,38 @@ mod tests {
             sockets: strings(&["wayland-1", "pipewire-0", "pulse/native"]),
             x11: true,
             dri: true,
+            nvidia: Vec::new(),
             env: vec![
                 ("WAYLAND_DISPLAY".into(), "wayland-1".into()),
                 ("XDG_RUNTIME_DIR".into(), "/run/user/1000".into()),
                 ("LANG".into(), "tr_TR.UTF-8".into()),
             ],
+        }
+    }
+
+    #[test]
+    fn finds_nvidia_nodes() {
+        let dev = strings(&["nvidia0", "nvidiactl", "nvidia-modeset", "nvidia-uvm", "nvidia-caps", "dri", "null"]);
+        assert_eq!(
+            nvidia_nodes(&dev, &strings(&["nvidia-cap1", "nvidia-cap2"])),
+            [
+                "/dev/nvidia-caps/nvidia-cap1",
+                "/dev/nvidia-caps/nvidia-cap2",
+                "/dev/nvidia-modeset",
+                "/dev/nvidia-uvm",
+                "/dev/nvidia0",
+                "/dev/nvidiactl"
+            ]
+        );
+        assert!(nvidia_nodes(&strings(&["dri", "null"]), &[]).is_empty());
+    }
+
+    #[test]
+    fn passes_nvidia_nodes() {
+        let host = Host { nvidia: strings(&["/dev/nvidiactl", "/dev/nvidia0"]), ..full_host() };
+        let a = nspawn_argv(&strings(&["glxgears"]), &strings(&["glxgears"]), &who(), &host);
+        for x in ["--bind=/dev/nvidiactl", "--property=DeviceAllow=/dev/nvidiactl rw", "--bind=/dev/nvidia0"] {
+            assert!(a.contains(&x.to_string()), "{x}: {a:?}");
         }
     }
 

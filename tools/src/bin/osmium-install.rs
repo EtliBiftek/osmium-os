@@ -4,14 +4,15 @@
 //!   osmium-install check        validate the config on stdin, print {"ok":..}
 //!   osmium-install run          install; JSON progress lines on stdout
 //!
-//! Config is `key=value` lines on stdin (passwords never on argv). Same disk layout and boot
-//! setup as the Calamares config (GPT, ESP at /boot/efi, btrfs @ @home @cache @log, GRUB,
-//! LUKS1 so GRUB can read /boot), built for speed: the squashfs is unpacked on all cores,
-//! independent chroot work runs in parallel, the initramfs is zstd -1, and there is no
-//! fallback image, swap file or os-prober.
+//! Config is `key=value` lines on stdin (passwords never on argv). Disk layout and boot setup:
+//! GPT, ESP at /efi, btrfs @ @home @cache @log @snapshots with @ as the default subvolume
+//! (so `snapper rollback` works), optional LUKS2, systemd-boot with a signed UKI (see
+//! osmium-boot). Built for speed: the squashfs is unpacked on all cores, independent chroot
+//! work runs in parallel, the initramfs is zstd -1, and there is no swap file.
 //!
-//! GRUB reads the LUKS passphrase with a US keymap. For the layouts in `US_KEYS` key slot 0
-//! holds what the same key presses give there, slot 1 the passphrase as typed.
+//! The initramfs is systemd-based: the LUKS passphrase is read with the console keymap
+//! (sd-vconsole), and a TPM2 token is used when osmium-boot enrolled one on the first boot.
+//! For that the installer leaves a one-time key file in /var/lib/osmium/boot/tpm.key.
 
 use osmium_tools::{Result, json_str, output, succeeds};
 use std::collections::HashMap;
@@ -24,21 +25,28 @@ use std::time::Instant;
 
 const MNT: &str = "/mnt";
 const MAPPER: &str = "cryptroot";
-const KEYFILE: &str = "/crypto_keyfile.bin";
-const ESP_MOUNT: &str = "/boot/efi";
+/// One-time LUKS key for the first-boot TPM2 enrollment (osmium-boot ilk), on the encrypted root.
+const TPM_KEY: &str = "/var/lib/osmium/boot/tpm.key";
+const TPM_KEY_TMP: &str = "/run/osmium-install-tpm.key";
+const ESP_MOUNT: &str = "/efi";
 const BOOTMNT: &str = "/run/archiso/bootmnt";
 const LIVE_ROOT: &str = "/run/archiso/airootfs";
 const BTRFS_OPTS: &str = "noatime,compress=zstd:1";
-/// (subvolume, mount point) as in the Calamares mount.conf.
-const SUBVOLS: &[(&str, &str)] = &[("@", "/"), ("@home", "/home"), ("@cache", "/var/cache"), ("@log", "/var/log")];
-/// Calamares users.conf groups plus input; groups missing from the image are skipped.
+/// (subvolume, mount point). `/` is not mounted by name: it is the default subvolume.
+const SUBVOLS: &[(&str, &str)] =
+    &[("@", "/"), ("@home", "/home"), ("@cache", "/var/cache"), ("@log", "/var/log"), ("@snapshots", "/.snapshots")];
+/// Groups of the new user; groups missing from the image are skipped.
 const GROUPS: &[&str] = &["users", "wheel", "video", "input", "audio", "lp", "network", "storage", "i2c"];
-/// Same as Calamares services-systemd.conf: (unit, enable).
+/// Units to enable or disable on the installed system: (unit, enable).
 const SERVICES: &[(&str, bool)] = &[
     ("NetworkManager.service", true),
     ("snapper-timeline.timer", true),
     ("snapper-cleanup.timer", true),
-    ("grub-btrfsd.service", true),
+    // Boot counting and rollback, first-boot TPM2 enrollment, systemd-boot updates.
+    ("osmium-boot-check.service", true),
+    ("osmium-boot-ok.service", true),
+    ("osmium-boot-first.service", true),
+    ("systemd-boot-update.service", true),
     ("power-profiles-daemon.service", true),
     ("iwd.service", false),
     ("systemd-networkd.service", false),
@@ -62,6 +70,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let code = match args.next().as_deref() {
         Some("disks") => cmd_disks(),
+        Some("firmware") => cmd_firmware(),
         Some("check") => cmd_check(),
         Some("run") => cmd_run(),
         _ => {
@@ -83,6 +92,18 @@ fn cmd_disks() -> i32 {
             1
         }
     }
+}
+
+/// `{"secure_boot":..,"setup_mode":..,"tpm":..}` for the installer's encryption notes.
+fn cmd_firmware() -> i32 {
+    let var = |name: &str| fs::read(format!("/sys/firmware/efi/efivars/{name}-8be4df61-93ca-11d2-aa0d-00e098032b8c")).ok();
+    let on = |name: &str| var(name).is_some_and(|b| b.get(4) == Some(&1));
+    println!("{}", firmware_json(on("SecureBoot"), on("SetupMode"), Path::new("/sys/class/tpm/tpm0").exists()));
+    0
+}
+
+fn firmware_json(secure_boot: bool, setup_mode: bool, tpm: bool) -> String {
+    format!("{{\"secure_boot\":{secure_boot},\"setup_mode\":{setup_mode},\"tpm\":{tpm}}}")
 }
 
 fn read_config() -> Config {
@@ -133,17 +154,20 @@ struct Disk {
     size: u64,
     removable: bool,
     transport: String,
+    /// Set by `probe_windows` (root only).
+    windows: Option<Windows>,
 }
 
 impl Disk {
     fn json(&self) -> String {
         format!(
-            "{{\"path\":{},\"model\":{},\"size\":{},\"removable\":{},\"transport\":{}}}",
+            "{{\"path\":{},\"model\":{},\"size\":{},\"removable\":{},\"transport\":{},\"windows\":{}}}",
             json_str(&self.path),
             json_str(&self.model),
             self.size,
             self.removable,
-            json_str(&self.transport)
+            json_str(&self.transport),
+            self.windows.as_ref().map_or("null".into(), Windows::json)
         )
     }
 }
@@ -199,6 +223,7 @@ fn filter_disks(lsblk: &str, live: &[String]) -> Vec<Disk> {
                 size,
                 removable: m.get("RM").is_some_and(|r| r == "1"),
                 transport: m.get("TRAN").cloned().unwrap_or_default(),
+                windows: None,
                 path,
             })
         })
@@ -220,6 +245,10 @@ struct Config {
     xkblayout: String,
     dots: String,
     dots_mode: String,
+    /// Install next to Windows instead of wiping the disk.
+    alongside: bool,
+    /// Space for OsmiumOS next to Windows, in GiB.
+    size_gb: u64,
 }
 
 /// `key=value` lines. Values are verbatim (a password may hold `=` or spaces); unknown keys ignored.
@@ -251,6 +280,8 @@ fn parse_config(input: &str) -> Config {
             "xkblayout" if !v.is_empty() => c.xkblayout = v,
             "dots" if !v.is_empty() => c.dots = v,
             "dots_mode" if !v.is_empty() => c.dots_mode = v,
+            "mode" => c.alongside = matches!(v.trim(), "yanina" | "1"),
+            "size_gb" => c.size_gb = v.trim().parse().unwrap_or(0),
             _ => {}
         }
     }
@@ -333,6 +364,9 @@ fn validate(c: &Config, tz_exists: &dyn Fn(&str) -> bool) -> Result {
     if !c.disk.starts_with("/dev/") || c.disk.contains("..") {
         return Err("Geçersiz disk yolu.".into());
     }
+    if c.alongside && c.size_gb < MIN_GB {
+        return Err(format!("Windows'un yanına kurulum için en az {MIN_GB} GB ayırın."));
+    }
     Ok(())
 }
 
@@ -342,18 +376,18 @@ fn part_path(disk: &str, n: u8) -> String {
     format!("{disk}{sep}{n}")
 }
 
-fn fstab(root_uuid: &str, esp_uuid: &str) -> String {
+fn fstab(root_uuid: &str, esp_uuid: &str, xbootldr_uuid: Option<&str>) -> String {
     let mut s = String::from("# <device> <dir> <type> <options> <dump> <pass>\n");
-    for (sub, mp) in SUBVOLS {
+    // `/` is whatever the default subvolume is: after `snapper rollback` that is the snapshot.
+    let _ = writeln!(s, "UUID={root_uuid} / btrfs {BTRFS_OPTS} 0 0");
+    for (sub, mp) in SUBVOLS.iter().filter(|(_, mp)| *mp != "/") {
         let _ = writeln!(s, "UUID={root_uuid} {mp} btrfs subvol=/{sub},{BTRFS_OPTS} 0 0");
     }
     let _ = writeln!(s, "UUID={esp_uuid} {ESP_MOUNT} vfat umask=0077 0 2");
+    if let Some(x) = xbootldr_uuid {
+        let _ = writeln!(s, "UUID={x} /boot vfat umask=0077 0 2");
+    }
     s
-}
-
-/// Root is opened by the initramfs (encrypt hook); noauto keeps systemd from retrying it.
-fn crypttab(luks_uuid: &str) -> String {
-    format!("{MAPPER} UUID={luks_uuid} {KEYFILE} luks,noauto\n")
 }
 
 fn hosts(host: &str) -> String {
@@ -373,59 +407,33 @@ fn xorg_keyboard(layout: &str) -> String {
     format!("Section \"InputClass\"\n    Identifier \"system-keyboard\"\n    MatchIsKeyboard \"on\"\n    Option \"XkbLayout\" \"{layout}\"\nEndSection\n")
 }
 
-/// Kernel args for the encrypt hook: unlock by UUID, key from the initramfs so the
-/// passphrase is asked once (by GRUB). `root=` is added by grub-mkconfig.
-fn grub_cmdline_luks(luks_uuid: &str) -> String {
-    format!("cryptdevice=UUID={luks_uuid}:{MAPPER} cryptkey=rootfs:{KEYFILE}")
-}
-
-/// Sets `KEY=value` in /etc/default/grub text, replacing a (possibly commented) default.
-fn set_kv(text: &str, key: &str, val: &str) -> String {
-    let prefix = format!("{key}=");
-    let mut out = String::new();
-    let mut done = false;
-    for l in text.lines() {
-        if l.trim_start().trim_start_matches('#').trim_start().starts_with(&prefix) {
-            if !done {
-                let _ = writeln!(out, "{prefix}{val}");
-                done = true;
-            }
-        } else {
-            let _ = writeln!(out, "{l}");
-        }
-    }
-    if !done {
-        let _ = writeln!(out, "{prefix}{val}");
-    }
-    out
-}
-
-fn grub_defaults(existing: &str, luks_uuid: Option<&str>) -> String {
-    let mut s = set_kv(existing, "GRUB_CMDLINE_LINUX_DEFAULT", "\"quiet\"");
-    s = set_kv(&s, "GRUB_DISTRIBUTOR", "\"OsmiumOS\"");
-    if let Some(u) = luks_uuid {
-        s = set_kv(&s, "GRUB_CMDLINE_LINUX", &format!("\"{}\"", grub_cmdline_luks(u)));
-        s = set_kv(&s, "GRUB_ENABLE_CRYPTODISK", "y");
-    }
-    s
-}
-
-/// mkinitcpio drop-in (compression is set by osmium-postinstall for both install paths).
-fn mkinitcpio_dropin(encrypted: bool, overlayfs: bool) -> String {
-    let mut hooks = vec!["base", "udev", "autodetect", "microcode", "modconf", "kms", "keyboard", "keymap", "consolefont", "block"];
+/// mkinitcpio drop-in (compression is set by osmium-postinstall). systemd-based, so the
+/// passphrase prompt uses the console keymap and TPM2 tokens work. vfat is built in because
+/// osmium-boot's rescue copy boots an older kernel whose modules the new root no longer has,
+/// and it still has to mount the ESP.
+fn mkinitcpio_dropin(encrypted: bool) -> String {
+    let mut hooks = vec!["base", "systemd", "autodetect", "microcode", "modconf", "kms", "keyboard", "sd-vconsole", "block"];
     if encrypted {
-        hooks.push("encrypt");
+        hooks.push("sd-encrypt");
     }
-    hooks.extend(["filesystems", "fsck"]);
-    if overlayfs {
-        hooks.push("grub-btrfs-overlayfs");
-    }
-    let mut s = format!("HOOKS=({})\n", hooks.join(" "));
-    if encrypted {
-        let _ = writeln!(s, "FILES=({KEYFILE})");
-    }
-    s
+    // osmium-kurtar: the rescue menu (QR code, previous kernel) when the root never appears.
+    hooks.extend(["filesystems", "fsck", "osmium-kurtar"]);
+    format!("MODULES=(vfat nls_cp437 nls_iso8859_1)\nHOOKS=({})\n", hooks.join(" "))
 }
+
+/// /etc/kernel/cmdline, embedded in the UKI. No `rootflags=subvol`: the root is the default
+/// subvolume. `panic=10` reboots a kernel panic, so systemd-boot counts the failed try.
+fn kernel_cmdline(root_uuid: &str, luks_uuid: Option<&str>) -> String {
+    let root = match luks_uuid {
+        Some(l) => format!("rd.luks.name={l}={MAPPER} root=/dev/mapper/{MAPPER}"),
+        None => format!("root=UUID={root_uuid}"),
+    };
+    format!("{root} rw quiet panic=10\n")
+}
+
+/// systemd-boot menu: hidden unless a key is held; no editor, which would allow changing
+/// the kernel command line (and with it the TPM-unlocked boot) without Secure Boot.
+const LOADER_CONF: &str = "timeout 0\neditor no\nconsole-mode keep\n# Skips an entry whose tries are used up (systemd >= 258).\npreferred osmium.efi\n";
 
 /// Wanted groups that exist in the image's /etc/group.
 fn filter_groups(group_file: &str) -> Vec<&'static str> {
@@ -486,32 +494,6 @@ fn set_kb_layout(text: &str, layout: &str, lua: bool) -> Option<String> {
         }
     }
     changed.then_some(out)
-}
-
-/// (layout, characters as typed, what the same keys give on a US keyboard). Only keys reached
-/// without AltGr or dead keys; ASCII letters, digits and space not listed stay as they are.
-const US_KEYS: &[(&str, &str, &str)] = &[
-    ("tr", r#"ıiİğĞüÜşŞöÖçÇ.:,;"é'^+&/()=*?-_!%"#, r#"i'"[{]};:,<.>/?\|`~@#$^&*()-_=+!%"#),
-    ("de", r#"zyZYßüÜ+*öÖäÄ#'-_"§&/()=?;:°!$%,."#, r#"yzYZ-[{]};:'"\|/?@#^&*()_<>~!$%,."#),
-    (
-        "fr",
-        r#"aqzwAQZWmM,?;.:/!§ù%$£*µ&é"'(-è_çà)=1234567890°+²"#,
-        r#"qawzQAWZ;:mM,<.>/?'"]}\|1234567890-=!@#$%^&*()_+`"#,
-    ),
-];
-
-/// What GRUB reads when the keys that type `pass` on `layout` are pressed: GRUB asks for the
-/// LUKS passphrase with a US keymap, whatever the system layout is (on a Turkish keyboard the
-/// `i` key gives `'`). None for layouts without a table and for characters the table cannot
-/// place (AltGr, dead keys, the extra ISO key).
-fn grub_passphrase(pass: &str, layout: &str) -> Option<String> {
-    let (_, from, to) = US_KEYS.iter().find(|t| Some(t.0) == layout.split(',').next())?;
-    pass.chars()
-        .map(|c| match from.chars().position(|f| f == c) {
-            Some(i) => to.chars().nth(i),
-            None => (c.is_ascii_alphanumeric() || c == ' ').then_some(c),
-        })
-        .collect()
 }
 
 fn plan_step(id: &str) -> (u8, &'static str) {
@@ -593,7 +575,18 @@ fn join<T>(h: std::thread::ScopedJoinHandle<'_, std::result::Result<T, String>>)
 
 fn list_disks() -> Result<Vec<Disk>> {
     let out = output(Command::new("lsblk").args(["-d", "-n", "-b", "-P", "-o", "PATH,SIZE,MODEL,RM,TRAN,TYPE,RO"]))?;
-    Ok(filter_disks(&out, &live_disks()))
+    let mut disks = filter_disks(&out, &live_disks());
+    // Reading NTFS and mounting the ESP need root; the UI asks through `sudo -n`.
+    if is_root() {
+        for d in &mut disks {
+            d.windows = probe_windows(&d.path);
+        }
+    }
+    Ok(disks)
+}
+
+fn is_root() -> bool {
+    output(Command::new("id").arg("-u")).is_ok_and(|s| s.trim() == "0")
 }
 
 /// Disks holding the live medium (may be several, e.g. through device-mapper).
@@ -626,8 +619,11 @@ fn check(c: &Config) -> Result {
         return Err(format!("Bilinmeyen yerel ayar: {}", c.locale));
     }
     let disks = list_disks().map_err(|e| format!("Diskler listelenemedi: {e}"))?;
-    if !disks.iter().any(|d| d.path == c.disk) {
+    let Some(disk) = disks.iter().find(|d| d.path == c.disk) else {
         return Err("Seçilen disk bulunamadı ya da canlı ortamın diski.".into());
+    };
+    if c.alongside && is_root() {
+        alongside_plan(disk.windows.as_ref(), c.size_gb)?;
     }
     Ok(())
 }
@@ -640,7 +636,17 @@ fn at(step: &'static str) -> impl Fn(String) -> StepErr {
     move |e| (step, e)
 }
 
+/// Where the install goes: wipe mode makes all three, next to Windows the ESP is Windows' own.
+struct Target {
+    esp: String,
+    format_esp: bool,
+    /// Our own boot partition (XBOOTLDR, /boot) when the ESP is Windows' small one.
+    xbootldr: Option<String>,
+    root: String,
+}
+
 struct Layout {
+    xbootldr: Option<(String, String)>,
     esp: String,
     root_uuid: String,
     esp_uuid: String,
@@ -652,13 +658,14 @@ fn install(c: &Config) -> std::result::Result<(), StepErr> {
     cleanup();
 
     begin("disk");
-    prepare_disk(c).map_err(at("disk"))?;
+    let target = if c.alongside { prepare_alongside(c) } else { prepare_disk(c) }.map_err(at("disk"))?;
 
     begin("format");
-    let lay = format_and_mount(c).map_err(at("format"))?;
+    let lay = format_and_mount(c, &target).map_err(at("format"))?;
 
     begin("copy");
     copy_system().map_err(at("copy"))?;
+    mount_xbootldr(&lay).map_err(at("copy"))?;
 
     begin("config");
     configure(c, &lay).map_err(at("config"))?;
@@ -670,7 +677,7 @@ fn install(c: &Config) -> std::result::Result<(), StepErr> {
     Ok(())
 }
 
-fn prepare_disk(c: &Config) -> Result {
+fn prepare_disk(c: &Config) -> Result<Target> {
     // Unmount/close everything on the disk, deepest device first.
     let tree = output(Command::new("lsblk").args(["-n", "-l", "-o", "PATH,TYPE", &c.disk])).unwrap_or_default();
     let devs: Vec<(String, String)> = tree
@@ -718,7 +725,7 @@ fn prepare_disk(c: &Config) -> Result {
             return Err(format!("Bölüm aygıtı oluşmadı: {p}"));
         }
     }
-    Ok(())
+    Ok(Target { esp: part_path(&c.disk, 1), format_esp: true, xbootldr: None, root: part_path(&c.disk, 2) })
 }
 
 fn uuid(dev: &str) -> Result<String> {
@@ -727,8 +734,8 @@ fn uuid(dev: &str) -> Result<String> {
     if u.is_empty() { Err(format!("{dev}: UUID okunamadı")) } else { Ok(u) }
 }
 
-fn format_and_mount(c: &Config) -> Result<Layout> {
-    let (esp, part) = (part_path(&c.disk, 1), part_path(&c.disk, 2));
+fn format_and_mount(c: &Config, t: &Target) -> Result<Layout> {
+    let (esp, part) = (t.esp.clone(), t.root.clone());
     let root_dev = if c.encrypt { format!("/dev/mapper/{MAPPER}") } else { part.clone() };
 
     // A private mount point: otherwise every mount below /mnt is copied into the mount
@@ -736,26 +743,22 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
     sh("mount", Command::new("mount").args(["--bind", MNT, MNT]))?;
     sh("mount", Command::new("mount").args(["--make-private", MNT]))?;
 
-    // What GRUB will read when the passphrase is typed at boot, if that differs.
-    let grub_pass =
-        Some(c).filter(|c| c.encrypt).and_then(|c| grub_passphrase(&c.passphrase, &c.xkblayout)).filter(|g| *g != c.passphrase);
-
     // The FAT format runs alongside LUKS + btrfs.
     std::thread::scope(|s| -> Result {
-        let fat = s.spawn(|| sh("mkfs.fat", Command::new("mkfs.fat").args(["-F32", "-n", "EFI", &esp])));
+        let fat = s.spawn(|| -> Result {
+            if t.format_esp {
+                sh("mkfs.fat", Command::new("mkfs.fat").args(["-F32", "-n", "EFI", &esp]))?;
+            }
+            match &t.xbootldr {
+                Some(x) => sh("mkfs.fat", Command::new("mkfs.fat").args(["-F32", "-n", "OSMIUMBOOT", x])),
+                None => Ok(()),
+            }
+        });
         let main = (|| -> Result {
             if c.encrypt {
-                // LUKS1: GRUB reads /boot from the encrypted root. 1 s iteration keeps GRUB's unlock quick.
-                let mut format = vec![
-                    "luksFormat", "--type", "luks1", "--batch-mode", "--key-size", "512",
-                    "--hash", "sha256", "--iter-time", "1000", "--key-file=-",
-                ];
-                if grub_pass.is_some() {
-                    // GRUB tries the slots in order: slot 0 is kept for the key it will be given.
-                    format.extend(["--key-slot", "1"]);
-                }
-                format.push(&part);
-                sh_in("cryptsetup luksFormat", Command::new("cryptsetup").args(&format), &c.passphrase)?;
+                // LUKS2 with argon2id: only the systemd initramfs reads it, never a boot loader.
+                let format = ["luksFormat", "--type", "luks2", "--batch-mode", "--iter-time", "2000", "--key-file=-", &part];
+                sh_in("cryptsetup luksFormat", Command::new("cryptsetup").args(format), &c.passphrase)?;
                 sh_in(
                     "cryptsetup open",
                     Command::new("cryptsetup").args(["open", "--type", "luks", "--key-file=-", &part, MAPPER]),
@@ -772,8 +775,10 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
     for (sub, _) in SUBVOLS {
         sh("btrfs subvolume", Command::new("btrfs").args(["-q", "subvolume", "create", &format!("{MNT}/{sub}")]))?;
     }
+    sh("btrfs subvolume set-default", Command::new("btrfs").args(["subvolume", "set-default", &format!("{MNT}/@")]))?;
     sh("umount", Command::new("umount").arg(MNT))?;
-    for (sub, mp) in SUBVOLS {
+    // /.snapshots is mounted after `snapper create-config`, which wants to create it itself.
+    for (sub, mp) in SUBVOLS.iter().filter(|(_, mp)| *mp != "/.snapshots") {
         let dir = format!("{MNT}{mp}");
         fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
         sh(
@@ -784,52 +789,31 @@ fn format_and_mount(c: &Config) -> Result<Layout> {
 
     let luks_uuid = if c.encrypt { Some(uuid(&part)?) } else { None };
     if c.encrypt {
-        if let Some(g) = &grub_pass
-            && let Err(e) = add_grub_key(c, &part, g)
-        {
-            // Not fatal: the disk still opens with the passphrase typed on a US layout.
-            emit("format", plan_step("format").0, &format!("uyarı: açılış parolası için ek anahtar eklenemedi: {e}"));
-        }
         add_keyfile(c, &part)?;
     }
-    Ok(Layout { root_uuid: uuid(&root_dev)?, esp_uuid: uuid(&esp)?, esp, luks_uuid })
+    let xbootldr = match &t.xbootldr {
+        Some(x) => Some((x.clone(), uuid(x)?)),
+        None => None,
+    };
+    Ok(Layout { root_uuid: uuid(&root_dev)?, esp_uuid: uuid(&esp)?, esp, luks_uuid, xbootldr })
 }
 
-/// Key slot 0 for the passphrase as GRUB reads it (US keymap), so the keys the user pressed
-/// in the installer also open the disk at boot.
-fn add_grub_key(c: &Config, part: &str, grub_pass: &str) -> Result {
-    // /run is a tmpfs: the key never reaches a disk. Mode first, content second.
-    let path = "/run/osmium-install.key";
-    let _ = fs::remove_file(path);
-    let res = fs::write(path, "")
-        .map_err(|e| format!("{path}: {e}"))
-        .and_then(|()| chmod(path, 0o600))
-        .and_then(|()| fs::write(path, grub_pass).map_err(|e| format!("{path}: {e}")))
-        .and_then(|()| {
-            sh_in(
-                "cryptsetup luksAddKey",
-                Command::new("cryptsetup")
-                    .args(["luksAddKey", "--key-slot", "0", "--iter-time", "1000", "--key-file=-", part, path]),
-                &c.passphrase,
-            )
-        });
-    let _ = fs::remove_file(path);
-    res
-}
-
-/// Random key in the initramfs so the passphrase is only asked once.
+/// Random one-time key for the first-boot TPM2 enrollment. It waits on the tmpfs /run until
+/// the system is copied, then moves to TPM_KEY on the encrypted root (see `configure`).
 fn add_keyfile(c: &Config, part: &str) -> Result {
-    let path = format!("{MNT}{KEYFILE}");
-    let mut key = [0u8; 512];
+    let path = TPM_KEY_TMP;
+    let mut key = [0u8; 64];
     fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut key))
         .map_err(|e| format!("/dev/urandom: {e}"))?;
-    fs::write(&path, key).map_err(|e| format!("{path}: {e}"))?;
-    chmod(&path, 0o000)?;
+    let _ = fs::remove_file(path);
+    fs::write(path, "").map_err(|e| format!("{path}: {e}"))?;
+    chmod(path, 0o600)?;
+    fs::write(path, key).map_err(|e| format!("{path}: {e}"))?;
     // High-entropy key: a tiny iteration time loses nothing and saves a second.
     sh_in(
         "cryptsetup luksAddKey",
-        Command::new("cryptsetup").args(["luksAddKey", "--iter-time", "10", "--key-file=-", part, &path]),
+        Command::new("cryptsetup").args(["luksAddKey", "--pbkdf", "pbkdf2", "--iter-time", "10", "--key-file=-", part, path]),
         &c.passphrase,
     )
 }
@@ -857,11 +841,15 @@ fn copy_system() -> Result {
             Command::new("rsync").args(["-aHAX", "--numeric-ids", &format!("{LIVE_ROOT}/"), &format!("{MNT}/")]),
         )?;
     }
-    // The ISO keeps the kernel outside the squashfs. postinstall also does this; harmless duplicate.
-    let kernel = format!("{BOOTMNT}/arch/boot/x86_64/vmlinuz-linux");
-    if Path::new(&kernel).is_file() {
-        let _ = fs::create_dir_all(format!("{MNT}/boot"));
-        fs::copy(&kernel, format!("{MNT}/boot/vmlinuz-linux")).map_err(|e| format!("vmlinuz: {e}"))?;
+    // The ISO keeps the kernel (vmlinuz-linux-zen) outside the squashfs. postinstall also does
+    // this; harmless duplicate.
+    let boot = format!("{BOOTMNT}/arch/boot/x86_64");
+    for e in fs::read_dir(&boot).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with("vmlinuz-") {
+            let _ = fs::create_dir_all(format!("{MNT}/boot"));
+            fs::copy(e.path(), format!("{MNT}/boot/{name}")).map_err(|e| format!("{name}: {e}"))?;
+        }
     }
     // Microcode images, which mkarchiso also keeps outside the squashfs (owned by *-ucode packages).
     for img in ["amd-ucode.img", "intel-ucode.img"] {
@@ -936,7 +924,7 @@ fn chroot_mounts() -> Result {
         m("mount udev", &["--bind", "/run/udev", &format!("{MNT}/run/udev")])?;
     }
     if Path::new("/sys/firmware/efi/efivars").is_dir() {
-        // Optional: without it grub-install falls back to the removable path.
+        // Optional: without it bootctl only installs the fallback path, and keys are not enrolled.
         succeeds(Command::new("mount").args(["-t", "efivarfs", "efivarfs", &format!("{MNT}/sys/firmware/efi/efivars")]));
     }
     Ok(())
@@ -947,9 +935,18 @@ fn configure(c: &Config, lay: &Layout) -> Result {
     emit("config", plan_step("config").0, "Yapılandırma dosyaları yazılıyor");
 
     // Host-side file writes: milliseconds.
-    write_to("/etc/fstab", &fstab(&lay.root_uuid, &lay.esp_uuid))?;
-    if let Some(u) = &lay.luks_uuid {
-        write_to("/etc/crypttab", &crypttab(u))?;
+    write_to("/etc/fstab", &fstab(&lay.root_uuid, &lay.esp_uuid, lay.xbootldr.as_ref().map(|(_, u)| u.as_str())))?;
+    if lay.xbootldr.is_some() {
+        // osmium-boot then puts the UKIs on it instead of the (Windows) ESP.
+        write_to("/etc/osmium/boot.conf", "xbootldr=/boot\n")?;
+    }
+    write_to("/etc/kernel/cmdline", &kernel_cmdline(&lay.root_uuid, lay.luks_uuid.as_deref()))?;
+    if lay.luks_uuid.is_some() {
+        let dst = format!("{MNT}{TPM_KEY}");
+        fs::create_dir_all(format!("{MNT}/var/lib/osmium/boot")).map_err(|e| format!("{dst}: {e}"))?;
+        fs::copy(TPM_KEY_TMP, &dst).map_err(|e| format!("{dst}: {e}"))?;
+        chmod(&dst, 0o600)?;
+        let _ = fs::remove_file(TPM_KEY_TMP);
     }
     write_to("/etc/machine-id", "")?;
     write_to("/etc/hostname", &format!("{}\n", c.hostname))?;
@@ -960,10 +957,7 @@ fn configure(c: &Config, lay: &Layout) -> Result {
     write_to("/etc/X11/xorg.conf.d/00-keyboard.conf", &xorg_keyboard(&c.xkblayout))?;
     write_to("/etc/sudoers.d/10-wheel", "%wheel ALL=(ALL:ALL) ALL\n")?;
     chmod(&format!("{MNT}/etc/sudoers.d/10-wheel"), 0o440)?;
-    let overlayfs = Path::new(&format!("{MNT}/usr/lib/initcpio/install/grub-btrfs-overlayfs")).exists();
-    write_to("/etc/mkinitcpio.conf.d/10-osmium.conf", &mkinitcpio_dropin(c.encrypt, overlayfs))?;
-    let grub = fs::read_to_string(format!("{MNT}/etc/default/grub")).unwrap_or_default();
-    write_to("/etc/default/grub", &grub_defaults(&grub, lay.luks_uuid.as_deref()))?;
+    write_to("/etc/mkinitcpio.conf.d/10-osmium.conf", &mkinitcpio_dropin(c.encrypt))?;
     sh(
         "ln",
         Command::new("ln").args(["-sf", &format!("/usr/share/zoneinfo/{}", c.timezone), &format!("{MNT}/etc/localtime")]),
@@ -990,17 +984,19 @@ fn configure(c: &Config, lay: &Layout) -> Result {
     })
 }
 
-/// initramfs, GRUB, services and the desktop dots, as parallel as their dependencies allow.
+/// UKI, systemd-boot, Secure Boot keys, services and the desktop dots, as parallel as their
+/// dependencies allow.
 fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
     let esp_dir = format!("{MNT}{ESP_MOUNT}");
     fs::create_dir_all(&esp_dir).map_err(|e| ("boot", format!("{esp_dir}: {e}")))?;
     sh("mount ESP", Command::new("mount").args(["-o", "umask=0077", &lay.esp, &esp_dir])).map_err(at("boot"))?;
+    snapshots_subvol(lay).map_err(at("boot"))?;
 
     std::thread::scope(|s| {
-        let grub = s.spawn(|| -> Result { grub_install() });
+        let loader = s.spawn(|| -> Result { install_loader(&c.disk, &lay.esp, lay.xbootldr.is_some()) });
         let services = s.spawn(|| -> Result {
             for (unit, on) in SERVICES {
-                // Missing units are fine (edition-dependent), as non-mandatory units in Calamares.
+                // Missing units are fine (edition-dependent).
                 succeeds(Command::new("systemctl").arg(format!("--root={MNT}")).arg(if *on { "enable" } else { "disable" }).arg(unit));
             }
             Ok(())
@@ -1027,16 +1023,86 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
         });
 
         let initramfs = sh("mkinitcpio", &mut ch("mkinitcpio", &["-P"]));
-        let grub = join(grub);
+        let loader = join(loader);
         let _ = join(services);
         let _ = join(dots);
         initramfs.map_err(at("boot"))?;
-        grub.map_err(at("boot"))?;
-        // First rollback point; before grub-mkconfig so grub-btrfs lists it. Not fatal.
+        loader.map_err(at("boot"))?;
+        // Signs the UKI (keys were made by install_loader) and puts it on the ESP.
+        sh("osmium-boot", &mut ch("osmium-boot", &["kur", "--ilk"])).map_err(at("boot"))?;
+        // First rollback point. Not fatal.
         succeeds(&mut ch("snapper", &["--no-dbus", "-c", "root", "create", "-d", "Kurulum"]));
-        // grub-mkconfig lists the initramfs, so it must come last.
-        sh("grub-mkconfig", &mut ch("grub-mkconfig", &["-o", "/boot/grub/grub.cfg"])).map_err(at("boot"))
+        Ok(())
     })
+}
+
+/// `snapper create-config` (run by osmium-postinstall) made /.snapshots a subvolume inside @,
+/// which a rollback would leave behind. Replace it with the top-level @snapshots.
+fn snapshots_subvol(lay: &Layout) -> Result {
+    let dir = format!("{MNT}/.snapshots");
+    if succeeds(Command::new("btrfs").args(["subvolume", "show", &dir])) && !succeeds(Command::new("mountpoint").args(["-q", &dir])) {
+        sh("btrfs subvolume delete", Command::new("btrfs").args(["-q", "subvolume", "delete", &dir]))?;
+    }
+    fs::create_dir_all(&dir).map_err(|e| format!("{dir}: {e}"))?;
+    let dev = match &lay.luks_uuid {
+        Some(_) => format!("/dev/mapper/{MAPPER}"),
+        None => format!("/dev/disk/by-uuid/{}", lay.root_uuid),
+    };
+    sh("mount", Command::new("mount").args(["-o", &format!("subvol=/@snapshots,{BTRFS_OPTS}"), &dev, &dir]))?;
+    chmod(&dir, 0o750)
+}
+
+/// Secure Boot keys (enrolled right away when the firmware is in Setup Mode), a signed
+/// systemd-boot, and the loader config. The UKI itself comes later (`osmium-boot kur`).
+fn install_loader(disk: &str, esp: &str, xbootldr: bool) -> Result {
+    remove_old_boot_entries();
+    sh("sbctl create-keys", &mut ch("sbctl", &["create-keys"]))?;
+    let stub = "/usr/lib/systemd/boot/efi/systemd-bootx64.efi";
+    sh("sbctl sign", &mut ch("sbctl", &["sign", "-s", "-o", &format!("{stub}.signed"), stub]))?;
+    // bootctl checks the partition type through udev; the chroot sees the live system's.
+    let bootctl = |extra: &[&str]| {
+        let boot: &[&str] = if xbootldr { &["--boot-path", "/boot"] } else { &[] };
+        let mut c = ch("bootctl", &[&["install", "--esp-path", ESP_MOUNT], boot, extra].concat());
+        c.env("SYSTEMD_RELAX_ESP_CHECKS", "1");
+        sh("bootctl install", &mut c)
+    };
+    // In the chroot bootctl cannot see the ESP's partition GUID and would write a boot entry
+    // pointing nowhere (only the fallback /EFI/BOOT/BOOTX64.EFI path then boots, and next to
+    // Windows the firmware starts Windows). The entry is made from outside instead.
+    bootctl(&["--no-variables"])?;
+    if let Err(e) = add_boot_entry(disk, esp) {
+        emit("boot", plan_step("boot").0, &format!("uyarı: UEFI açılış girdisi eklenemedi, yedek yoldan açılacak: {e}"));
+    }
+    // Next to Windows the menu shows for a moment, so Windows can be picked.
+    let conf = if xbootldr { LOADER_CONF.replace("timeout 0", "timeout 3") } else { LOADER_CONF.to_string() };
+    write_to(&format!("{ESP_MOUNT}/loader/loader.conf"), &conf)?;
+    if setup_mode() {
+        // Microsoft's keys stay: GPU and network option ROMs are signed with them.
+        if let Err(e) = sh("sbctl enroll-keys", &mut ch("sbctl", &["enroll-keys", "--microsoft"])) {
+            emit("boot", plan_step("boot").0, &format!("uyarı: Güvenli Önyükleme anahtarları yüklenemedi: {e}"));
+        }
+    }
+    Ok(())
+}
+
+/// NVRAM entry for systemd-boot on `esp`, first in BootOrder (efibootmgr puts new entries first).
+fn add_boot_entry(disk: &str, esp: &str) -> Result {
+    if !Path::new("/sys/firmware/efi/efivars").is_dir() {
+        return Ok(());
+    }
+    let n = part_number(disk, esp).ok_or_else(|| format!("{esp}: bölüm numarası okunamadı"))?;
+    sh(
+        "efibootmgr",
+        Command::new("efibootmgr").args([
+            "--quiet", "--create", "--disk", disk, "--part", &n.to_string(), "--label", "OsmiumOS",
+            "--loader", "\\EFI\\systemd\\systemd-bootx64.efi",
+        ]),
+    )
+}
+
+/// The firmware accepts new Secure Boot keys without a signature (SetupMode = 1).
+fn setup_mode() -> bool {
+    fs::read("/sys/firmware/efi/efivars/SetupMode-8be4df61-93ca-11d2-aa0d-00e098032b8c").is_ok_and(|b| b.get(4) == Some(&1))
 }
 
 /// Sets `kb_layout` in every Lua/hyprlang file under `dir`. Runs as root on a user-owned tree,
@@ -1060,18 +1126,242 @@ fn apply_kb_layout(dir: &Path, layout: &str) {
     }
 }
 
-fn grub_install() -> Result {
-    let base = ["--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=OsmiumOS"];
-    if sh("grub-install", &mut ch("grub-install", &base)).is_ok() {
-        // Same as Calamares installEFIFallback: firmware that ignores NVRAM entries (VirtualBox).
-        let efi = format!("{MNT}{ESP_MOUNT}/EFI");
-        fs::create_dir_all(format!("{efi}/BOOT")).map_err(|e| format!("{efi}/BOOT: {e}"))?;
-        fs::copy(format!("{efi}/OsmiumOS/grubx64.efi"), format!("{efi}/BOOT/BOOTX64.EFI"))
-            .map_err(|e| format!("BOOTX64.EFI: {e}"))?;
-        return Ok(());
+/// `Boot000N` numbers of NVRAM entries labelled `label`, from `efibootmgr` output.
+fn boot_entries(efibootmgr: &str, label: &str) -> Vec<String> {
+    efibootmgr
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("Boot")?;
+            let (num, rest) = rest.split_at_checked(4)?;
+            // `*` marks an active entry, a space an inactive one.
+            let name = rest.strip_prefix(['*', ' '])?.strip_prefix(' ')?;
+            // The label ends at a tab (efibootmgr >= 18) or at two spaces before the path.
+            let name = name.split(['\t']).next()?.split("  ").next()?.trim_end();
+            (num.chars().all(|c| c.is_ascii_hexdigit()) && name == label).then(|| num.to_string())
+        })
+        .collect()
+}
+
+/// A reinstall would otherwise leave the old entry pointing at the old ESP next to the new one.
+fn remove_old_boot_entries() {
+    let Ok(list) = output(&mut Command::new("efibootmgr")) else { return };
+    for num in boot_entries(&list, "OsmiumOS") {
+        succeeds(Command::new("efibootmgr").args(["-q", "-b", &num, "-B"]));
     }
-    // No usable EFI variables: the removable path alone still boots.
-    sh("grub-install", &mut ch("grub-install", &["--target=x86_64-efi", "--efi-directory=/boot/efi", "--removable"]))
+}
+
+// ---------------------------------------------------------------- next to Windows
+
+/// Smallest OsmiumOS install next to Windows, in GiB.
+const MIN_GB: u64 = 20;
+/// Our XBOOTLDR partition: kernels and UKIs, since Windows' ESP is usually 100-260 MB.
+const XBOOTLDR_BYTES: u64 = 1 << 30;
+/// Room Windows keeps above what its NTFS needs today.
+const WINDOWS_SLACK: u64 = 10 << 30;
+const GIB: u64 = 1 << 30;
+const MIB: u64 = 1 << 20;
+const ESP_TYPE: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
+
+#[derive(Debug, Clone, PartialEq)]
+struct Windows {
+    esp: String,
+    ntfs: String,
+    ntfs_size: u64,
+    /// Smallest size ntfsresize accepts for the NTFS partition.
+    ntfs_min: u64,
+    /// Largest unpartitioned region of the disk.
+    free: u64,
+    /// Why Windows cannot be shrunk: "bitlocker", "hibernated", "ntfs" or "".
+    blocker: String,
+}
+
+impl Windows {
+    /// Bytes OsmiumOS can get: free space as it is, or what shrinking NTFS gives.
+    fn available(&self) -> u64 {
+        let shrink = if self.blocker.is_empty() { self.ntfs_size.saturating_sub(self.ntfs_min + WINDOWS_SLACK) } else { 0 };
+        self.free.max(shrink).saturating_sub(XBOOTLDR_BYTES + 16 * MIB)
+    }
+
+    fn json(&self) -> String {
+        format!(
+            "{{\"esp\":{},\"ntfs\":{},\"available\":{},\"blocker\":{}}}",
+            json_str(&self.esp),
+            json_str(&self.ntfs),
+            self.available(),
+            json_str(&self.blocker)
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Part {
+    path: String,
+    size: u64,
+    fstype: String,
+    parttype: String,
+}
+
+/// Partitions from `lsblk -n -b -P -o PATH,SIZE,FSTYPE,PARTTYPE,TYPE <disk>`.
+fn parse_parts(lsblk: &str) -> Vec<Part> {
+    lsblk
+        .lines()
+        .map(parse_pairs)
+        .filter(|m| m.get("TYPE").is_some_and(|t| t == "part"))
+        .filter_map(|m| {
+            Some(Part {
+                path: m.get("PATH")?.clone(),
+                size: m.get("SIZE")?.parse().ok()?,
+                fstype: m.get("FSTYPE").cloned().unwrap_or_default(),
+                parttype: m.get("PARTTYPE").cloned().unwrap_or_default().to_lowercase(),
+            })
+        })
+        .collect()
+}
+
+/// `ntfsresize --info`: "You might resize at 123456789 bytes or ...".
+fn ntfs_min_size(info: &str) -> Option<u64> {
+    let rest = &info[info.find("resize at ")? + "resize at ".len()..];
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+/// Largest free region from `sfdisk --list-free --bytes` (`Start End Sectors Size` rows).
+fn largest_free(text: &str) -> u64 {
+    text.lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split_whitespace().collect();
+            (f.len() == 4 && f[0].parse::<u64>().is_ok()).then(|| f[3].parse::<u64>().ok()).flatten()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// Why ntfsresize refuses, from its output; "" when it would resize.
+fn ntfs_blocker(info: &str, ok: bool) -> &'static str {
+    let lower = info.to_lowercase();
+    if lower.contains("hibernat") || lower.contains("fast restart") {
+        "hibernated"
+    } else if ok && ntfs_min_size(info).is_some() {
+        ""
+    } else {
+        "ntfs"
+    }
+}
+
+/// Number of a partition device of `disk` (`/dev/nvme0n1p3` -> 3).
+fn part_number(disk: &str, part: &str) -> Option<u32> {
+    let rest = part.strip_prefix(disk)?;
+    rest.strip_prefix('p').unwrap_or(rest).parse().ok()
+}
+
+/// The new NTFS partition size in MiB when it has to shrink for `need` bytes; None when the
+/// free space is enough as it is.
+fn alongside_plan(win: Option<&Windows>, size_gb: u64) -> Result<Option<u64>> {
+    let w = win.ok_or("Bu diskte Windows bulunamadı.")?;
+    let need = size_gb * GIB + XBOOTLDR_BYTES + 16 * MIB;
+    if w.free >= need {
+        return Ok(None);
+    }
+    match w.blocker.as_str() {
+        "bitlocker" => return Err("Windows bölümü BitLocker ile şifreli. Windows'ta BitLocker'ı kapatın (ya da askıya alın), sonra yeniden deneyin.".into()),
+        "hibernated" => return Err("Windows hazırda bekletmede (Hızlı Başlatma). Windows'ta Hızlı Başlatma'yı kapatıp \"Yeniden başlat\" ile kapatın, sonra yeniden deneyin.".into()),
+        "" => {}
+        _ => return Err("Windows bölümü küçültülemiyor (NTFS hatası). Windows'ta \"chkdsk /f\" çalıştırıp yeniden deneyin.".into()),
+    }
+    if size_gb * GIB > w.available() {
+        return Err(format!("Windows'tan en fazla {} GB ayrılabilir.", w.available() / GIB));
+    }
+    Ok(Some((w.ntfs_size - need) / MIB))
+}
+
+/// What is on `disk` for an install next to Windows: an ESP with Windows Boot Manager and
+/// its largest NTFS (or BitLocker) partition. None without Windows.
+fn probe_windows(disk: &str) -> Option<Windows> {
+    let lsblk = output(Command::new("lsblk").args(["-n", "-b", "-P", "-o", "PATH,SIZE,FSTYPE,PARTTYPE,TYPE", disk])).ok()?;
+    let parts = parse_parts(&lsblk);
+    let esp = parts.iter().find(|p| p.parttype == ESP_TYPE && windows_esp(&p.path))?;
+    let data = parts.iter().filter(|p| matches!(p.fstype.as_str(), "ntfs" | "BitLocker")).max_by_key(|p| p.size)?;
+    let free = largest_free(&output(Command::new("sfdisk").args(["--list-free", "--bytes", disk])).unwrap_or_default());
+    let (ntfs_min, blocker) = if data.fstype == "BitLocker" {
+        (data.size, "bitlocker")
+    } else {
+        let out = Command::new("ntfsresize").args(["--info", "--force", "--no-progress-bar", &data.path]).output().ok()?;
+        let text = String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+        (ntfs_min_size(&text).unwrap_or(data.size), ntfs_blocker(&text, out.status.success()))
+    };
+    Some(Windows { esp: esp.path.clone(), ntfs: data.path.clone(), ntfs_size: data.size, ntfs_min, free, blocker: blocker.into() })
+}
+
+/// Windows Boot Manager on an ESP, looked at read-only.
+fn windows_esp(dev: &str) -> bool {
+    let dir = "/run/osmium-install-esp";
+    if fs::create_dir_all(dir).is_err() || !succeeds(Command::new("mount").args(["-t", "vfat", "-o", "ro", dev, dir])) {
+        return false;
+    }
+    let found = ["EFI/Microsoft/Boot/bootmgfw.efi", "EFI/MICROSOFT/BOOT/BOOTMGFW.EFI"].iter().any(|f| Path::new(dir).join(f).is_file());
+    succeeds(Command::new("umount").arg(dir));
+    found
+}
+
+fn partition_numbers(disk: &str) -> Vec<u32> {
+    let parts = output(Command::new("lsblk").args(["-n", "-r", "-o", "PATH,TYPE", disk])).unwrap_or_default();
+    parts.lines().filter_map(|l| l.split_once(' ')).filter(|(_, t)| *t == "part").filter_map(|(p, _)| part_number(disk, p)).collect()
+}
+
+/// Adds one partition in the largest free block and returns its device.
+fn new_partition(disk: &str, size: &str, code: &str, name: &str) -> Result<String> {
+    let before = partition_numbers(disk);
+    sh("sgdisk", Command::new("sgdisk").args([&format!("-n0:0:{size}"), &format!("-t0:{code}"), &format!("-c0:{name}"), disk]))?;
+    succeeds(Command::new("partprobe").arg(disk));
+    succeeds(Command::new("udevadm").args(["settle", "--timeout=10"]));
+    let n = partition_numbers(disk).into_iter().find(|n| !before.contains(n)).ok_or("Yeni bölüm görünmedi.")?;
+    let p = part_path(disk, n as u8);
+    for _ in 0..50 {
+        if Path::new(&p).exists() {
+            return Ok(p);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(format!("Bölüm aygıtı oluşmadı: {p}"))
+}
+
+/// Shrinks Windows if needed, then adds our boot and root partitions. Never deletes anything.
+fn prepare_alongside(c: &Config) -> Result<Target> {
+    let win = probe_windows(&c.disk);
+    let shrink = alongside_plan(win.as_ref(), c.size_gb)?;
+    let w = win.ok_or("Windows bulunamadı.")?;
+    if let Some(mib) = shrink {
+        emit("disk", plan_step("disk").0, &format!("Windows bölümü {} GB'a küçültülüyor", mib * MIB / GIB));
+        let n = part_number(&c.disk, &w.ntfs).ok_or("NTFS bölüm numarası okunamadı.")?;
+        // The file system first, 1 MiB under the new partition end; then the partition.
+        let fs_bytes = (mib - 1) * MIB;
+        sh_in("ntfsresize", Command::new("ntfsresize").args(["--force", "--no-progress-bar", "--size", &fs_bytes.to_string(), &w.ntfs]), "y\n")?;
+        sh_in(
+            "sfdisk",
+            Command::new("sfdisk").args(["--no-reread", "--force", "-N", &n.to_string(), &c.disk]),
+            &format!(", {mib}MiB\n"),
+        )?;
+        succeeds(Command::new("partprobe").arg(&c.disk));
+        succeeds(Command::new("udevadm").args(["settle", "--timeout=10"]));
+    }
+    let xbootldr = new_partition(&c.disk, "+1GiB", "ea00", "OsmiumBoot")?;
+    let code = if c.encrypt { "8309" } else { "8300" };
+    let root = new_partition(&c.disk, &format!("+{}GiB", c.size_gb), code, "OsmiumOS")?;
+    for p in [&xbootldr, &root] {
+        succeeds(Command::new("wipefs").args(["-a", "-f", p]));
+    }
+    Ok(Target { esp: w.esp, format_esp: false, xbootldr: Some(xbootldr), root })
+}
+
+/// Next to Windows, /boot is our XBOOTLDR partition; the copied /boot (on btrfs) moves onto it.
+fn mount_xbootldr(lay: &Layout) -> Result {
+    let Some((dev, _)) = &lay.xbootldr else { return Ok(()) };
+    let (boot, old) = (format!("{MNT}/boot"), format!("{MNT}/boot.kopya"));
+    fs::rename(&boot, &old).map_err(|e| format!("{boot}: {e}"))?;
+    fs::create_dir_all(&boot).map_err(|e| format!("{boot}: {e}"))?;
+    sh("mount", Command::new("mount").args(["-o", "umask=0077", dev, &boot]))?;
+    // FAT keeps no owners or modes: copy the contents only.
+    sh("cp", Command::new("cp").args(["-rT", "--no-preserve=mode,ownership", &old, &boot]))?;
+    fs::remove_dir_all(&old).map_err(|e| format!("{old}: {e}"))
 }
 
 /// Unmounts everything under /mnt and closes LUKS. Safe to call at any point.
@@ -1113,6 +1403,19 @@ fn cleanup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_old_boot_entries() {
+        let list = "BootCurrent: 0001\nTimeout: 0 seconds\nBootOrder: 0003,0001,0000\n\
+            Boot0000* UiApp\tFvVol(7cb8bdc9)/FvFile(462caa21)\n\
+            Boot0001* UEFI QEMU HARDDISK  PciRoot(0x0)/Pci(0x1,0x1)\n\
+            Boot0003* OsmiumOS\tHD(1,GPT,abc)/File(\\EFI\\OsmiumOS\\grubx64.efi)\n\
+            Boot000A  OsmiumOS  HD(1,GPT,def)/File(\\EFI\\OsmiumOS\\grubx64.efi)\n\
+            Boot0004* OsmiumOS Yedek\tHD(1,GPT,abc)\n\
+            Boot0005* osmiumos\tHD(1,GPT,abc)\n";
+        assert_eq!(boot_entries(list, "OsmiumOS"), ["0003", "000A"]);
+        assert!(boot_entries("", "OsmiumOS").is_empty());
+    }
 
     const LSBLK: &str = r#"PATH="/dev/sda" SIZE="500107862016" MODEL="Samsung SSD 860 " RM="0" TRAN="sata" TYPE="disk" RO="0"
 PATH="/dev/sdb" SIZE="16008609792" MODEL="USB\x20DISK 3.0" RM="1" TRAN="usb" TYPE="disk" RO="0"
@@ -1157,7 +1460,7 @@ PATH="/dev/sdd" SIZE="1000" MODEL="Locked" RM="0" TRAN="sata" TYPE="disk" RO="1"
         let j = d.iter().find(|d| d.path == "/dev/nvme0n1").unwrap().json();
         assert_eq!(
             j,
-            r#"{"path":"/dev/nvme0n1","model":"WD \"Black\"","size":1000204886016,"removable":false,"transport":"nvme"}"#
+            r#"{"path":"/dev/nvme0n1","model":"WD \"Black\"","size":1000204886016,"removable":false,"transport":"nvme","windows":null}"#
         );
     }
 
@@ -1214,43 +1517,92 @@ PATH="/dev/sdd" SIZE="1000" MODEL="Locked" RM="0" TRAN="sata" TYPE="disk" RO="1"
 
     #[test]
     fn generated_text() {
-        let f = fstab("RRR", "EEE");
-        assert!(f.contains("UUID=RRR / btrfs subvol=/@,noatime,compress=zstd:1 0 0\n"));
+        let x = fstab("RRR", "EEE", Some("XXX"));
+        assert!(x.ends_with("UUID=XXX /boot vfat umask=0077 0 2\n"));
+        let f = fstab("RRR", "EEE", None);
+        assert!(!f.contains("/boot "));
+        assert!(f.contains("UUID=RRR / btrfs noatime,compress=zstd:1 0 0\n"));
+        assert!(!f.contains("subvol=/@,"));
+        assert!(f.contains("UUID=RRR /.snapshots btrfs subvol=/@snapshots,"));
         assert!(f.contains("UUID=RRR /home btrfs subvol=/@home,"));
         assert!(f.contains("UUID=RRR /var/cache btrfs subvol=/@cache,"));
         assert!(f.contains("UUID=RRR /var/log btrfs subvol=/@log,"));
-        assert!(f.contains("UUID=EEE /boot/efi vfat umask=0077 0 2\n"));
-        assert_eq!(crypttab("LLL"), "cryptroot UUID=LLL /crypto_keyfile.bin luks,noauto\n");
+        assert!(f.contains("UUID=EEE /efi vfat umask=0077 0 2\n"));
         assert_eq!(hosts("pc"), "127.0.0.1 localhost\n::1 localhost\n127.0.1.1 pc.localdomain pc\n");
         assert_eq!(locale_gen("tr_TR.UTF-8"), "en_US.UTF-8 UTF-8\ntr_TR.UTF-8 UTF-8\n");
         assert_eq!(locale_gen("en_US.UTF-8"), "en_US.UTF-8 UTF-8\n");
         assert!(xorg_keyboard("tr").contains("\"XkbLayout\" \"tr\""));
     }
 
+    const WIN_LSBLK: &str = r#"PATH="/dev/nvme0n1p1" SIZE="104857600" FSTYPE="vfat" PARTTYPE="c12a7328-f81f-11d2-ba4b-00a0c93ec93b" TYPE="part"
+PATH="/dev/nvme0n1p2" SIZE="16777216" FSTYPE="" PARTTYPE="e3c9e316-0b5c-4db8-817d-f92df00215ae" TYPE="part"
+PATH="/dev/nvme0n1p3" SIZE="499000000000" FSTYPE="ntfs" PARTTYPE="ebd0a0a2-b9e5-4433-87c0-68b6b72699c7" TYPE="part"
+PATH="/dev/nvme0n1p4" SIZE="700000000" FSTYPE="ntfs" PARTTYPE="de94bba4-06d1-4d40-a16a-bfd50179d6ac" TYPE="part""#;
+
     #[test]
-    fn grub_luks() {
-        assert_eq!(
-            grub_cmdline_luks("U"),
-            "cryptdevice=UUID=U:cryptroot cryptkey=rootfs:/crypto_keyfile.bin"
-        );
-        let base = "# comment\nGRUB_TIMEOUT=5\nGRUB_DISTRIBUTOR=\"Arch\"\nGRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet\"\nGRUB_CMDLINE_LINUX=\"\"\n#GRUB_ENABLE_CRYPTODISK=y\n";
-        let g = grub_defaults(base, Some("U"));
-        assert!(g.contains("GRUB_CMDLINE_LINUX_DEFAULT=\"quiet\"\n"));
-        assert!(g.contains("GRUB_DISTRIBUTOR=\"OsmiumOS\"\n"));
-        assert!(g.contains("GRUB_CMDLINE_LINUX=\"cryptdevice=UUID=U:cryptroot cryptkey=rootfs:/crypto_keyfile.bin\"\n"));
-        assert!(g.contains("\nGRUB_ENABLE_CRYPTODISK=y\n") && !g.contains("#GRUB_ENABLE_CRYPTODISK"));
-        assert!(g.contains("GRUB_TIMEOUT=5\n") && g.matches("GRUB_CMDLINE_LINUX=").count() == 1);
-        let plain = grub_defaults("", None);
-        assert!(!plain.contains("CRYPTODISK") && plain.contains("GRUB_CMDLINE_LINUX_DEFAULT=\"quiet\""));
+    fn reads_a_windows_disk() {
+        let parts = parse_parts(WIN_LSBLK);
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0].parttype, ESP_TYPE);
+        assert_eq!(parts[2].fstype, "ntfs");
+        assert_eq!(part_number("/dev/nvme0n1", "/dev/nvme0n1p3"), Some(3));
+        assert_eq!(part_number("/dev/sda", "/dev/sda12"), Some(12));
+        assert_eq!(part_number("/dev/sda", "/dev/sdb1"), None);
+        let info = "ntfsresize v2022.10.3\nDevice name        : /dev/sda3\nYou might resize at 53687091200 bytes or 53688 MB (freeing 445312 MB).\n";
+        assert_eq!(ntfs_min_size(info), Some(53687091200));
+        assert_eq!(ntfs_blocker(info, true), "");
+        assert_eq!(ntfs_blocker("ERROR: The NTFS partition is hibernated. Windows must be resumed", false), "hibernated");
+        assert_eq!(ntfs_blocker("ERROR: volume is dirty", false), "ntfs");
+        let free = "Disk /dev/sda: 100 GiB\n\n   Start       End  Sectors        Size\n    2048      4095     2048     1048576\n 9000000 209715166 200715167 102766165504\n";
+        assert_eq!(largest_free(free), 102766165504);
+        assert_eq!(largest_free(""), 0);
+    }
+
+    #[test]
+    fn plans_the_shrink() {
+        let w = Windows {
+            esp: "/dev/sda1".into(),
+            ntfs: "/dev/sda3".into(),
+            ntfs_size: 400 * GIB,
+            ntfs_min: 100 * GIB,
+            free: 0,
+            blocker: String::new(),
+        };
+        // 400 - 100 - 10 slack = 290 GiB, minus the boot partition.
+        assert!(w.available() > 288 * GIB && w.available() < 290 * GIB);
+        let mib = alongside_plan(Some(&w), 50).unwrap().unwrap();
+        assert_eq!(mib * MIB, 400 * GIB - 50 * GIB - XBOOTLDR_BYTES - 16 * MIB);
+        assert!(alongside_plan(Some(&w), 300).unwrap_err().contains("en fazla 288 GB"));
+        let free = Windows { free: 80 * GIB, ..w.clone() };
+        assert_eq!(alongside_plan(Some(&free), 50), Ok(None));
+        let hib = Windows { blocker: "hibernated".into(), ..w.clone() };
+        assert!(alongside_plan(Some(&hib), 50).unwrap_err().contains("Hızlı Başlatma"));
+        assert_eq!(hib.available(), 0);
+        let bl = Windows { blocker: "bitlocker".into(), ..w.clone() };
+        assert!(alongside_plan(Some(&bl), 50).unwrap_err().contains("BitLocker"));
+        assert!(alongside_plan(None, 50).is_err());
+        assert!(w.json().contains("\"blocker\":\"\""));
+    }
+
+    #[test]
+    fn firmware_report() {
+        assert_eq!(firmware_json(false, true, true), r#"{"secure_boot":false,"setup_mode":true,"tpm":true}"#);
+    }
+
+    #[test]
+    fn kernel_command_line() {
+        assert_eq!(kernel_cmdline("R", None), "root=UUID=R rw quiet panic=10\n");
+        assert_eq!(kernel_cmdline("R", Some("L")), "rd.luks.name=L=cryptroot root=/dev/mapper/cryptroot rw quiet panic=10\n");
+        assert!(LOADER_CONF.contains("editor no") && !LOADER_CONF.contains("\ndefault "), "a default would pin a failed entry");
     }
 
     #[test]
     fn initcpio_hooks() {
-        let e = mkinitcpio_dropin(true, true);
-        assert!(e.contains(" block encrypt filesystems fsck grub-btrfs-overlayfs)"));
-        assert!(e.contains("FILES=(/crypto_keyfile.bin)"));
-        let p = mkinitcpio_dropin(false, false);
-        assert!(!p.contains("encrypt") && !p.contains("FILES") && p.contains("filesystems fsck)"));
+        let e = mkinitcpio_dropin(true);
+        assert!(e.contains("HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck osmium-kurtar)"));
+        assert!(e.contains("MODULES=(vfat "));
+        let p = mkinitcpio_dropin(false);
+        assert!(!p.contains("encrypt") && p.contains("filesystems fsck osmium-kurtar)"));
     }
 
     #[test]
@@ -1277,28 +1629,6 @@ PATH="/dev/sdd" SIZE="1000" MODEL="Locked" RM="0" TRAN="sata" TYPE="disk" RO="1"
             "input {\r\n    kb_layout = fr\r\n    # kb_layout = xx\n    kb_variant =\n    kb_layout=fr\n}"
         );
         assert_eq!(set_kb_layout("exec-once = waybar\n", "us", false), None);
-    }
-
-    #[test]
-    fn passphrase_as_grub_reads_it() {
-        for (layout, from, to) in US_KEYS {
-            assert_eq!(from.chars().count(), to.chars().count(), "{layout}");
-            let mut seen: Vec<char> = from.chars().collect();
-            seen.sort();
-            seen.dedup();
-            assert_eq!(seen.len(), from.chars().count(), "{layout}: a key listed twice");
-            assert!(to.is_ascii(), "{layout}");
-        }
-        assert_eq!(grub_passphrase("ci-test-pass", "tr").as_deref(), Some("c'=test=pass"));
-        assert_eq!(grub_passphrase("Şifre ığüşöç.1", "tr").as_deref(), Some(":'fre i[];,./1"));
-        assert_eq!(grub_passphrase("abc XYZ 019", "tr").as_deref(), Some("abc XYZ 019"), "same keys: same text");
-        assert_eq!(grub_passphrase("Zy-ß", "de,us").as_deref(), Some("Yz/-"));
-        assert_eq!(grub_passphrase("azerty1", "fr").as_deref(), Some("qwerty!"));
-        // AltGr characters, unknown layouts and layout variants cannot be translated.
-        assert_eq!(grub_passphrase("a@b", "tr"), None);
-        assert_eq!(grub_passphrase("a<b", "tr"), None);
-        assert_eq!(grub_passphrase("abc", "us"), None);
-        assert_eq!(grub_passphrase("abc", "tr(f)"), None);
     }
 
     #[test]

@@ -44,7 +44,17 @@ osmium-dots apply waffle
 osmium-dots search catppuccin                         # GitHub repos with topic "hyprland"
 osmium-dots apply github:owner/repo                   # copies only its config dirs
 osmium-dots apply github:owner/repo --mode script     # shows its install script, runs after `çalıştır`
+osmium-dots onizle m3ww                               # try it in a window first (nested hyprland-rust)
+osmium-dots parcalar synthwave                        # parts it can give or take
+osmium-dots karistir neon ii renk=synthwave duvar=synthwave   # ii with synthwave's colors
 ```
+
+Mixing works with the parts each dot declares in its `info`: `renk` (accent color), `duvar`
+(wallpaper), `cubuk` (bar), `bildirim` (notifications), `baslatici` (launcher) and `kilit` (lock
+screen). ii rebuilds its whole palette from a color or wallpaper; a bar or notification daemon
+replaces the base's own when the base says how to stop it (synthwave does; ii's are part of its
+shell); a launcher or lock screen takes over the base's key (`SUPER, L` and so on). The installer
+has a preview button for the built-in desktops.
 
 Replaced `~/.config/<dir>` entries go to `~/.local/state/osmium/dots-backup/<time>/`. The login
 session (`osmium-dots session`, used by greetd and the live ISO) applies `ii` on first login.
@@ -57,19 +67,36 @@ widgets (`~/.config/quickshell/ii/osmium-installer.qml`). It asks for a disk (op
 region, user and desktop (built-in dots or one found on GitHub), then runs
 `sudo osmium-install run`, which:
 
-- partitions GPT (1 GiB ESP + btrfs with `@ @home @cache @log`, zstd:1),
+- partitions GPT (1 GiB ESP at `/efi` + btrfs with `@ @home @cache @log @snapshots`, zstd:1,
+  `@` as the default subvolume), with LUKS2 if asked,
 - unpacks the live squashfs with every core (`unsquashfs`), no downloads,
-- configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 initramfs
-  (no fallback image) and installs GRUB with grub-btrfs snapshots, in parallel where possible.
+- configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 unified
+  kernel image (UKI) and installs systemd-boot, in parallel where possible.
 
-With LUKS, GRUB asks for the passphrase before any keymap is loaded and reads the keys as a US
-keyboard. For the Turkish, German and French layouts the installer therefore adds a second key
-slot holding what the same key presses type on a US layout, so the passphrase opens the disk at
-boot exactly as it was typed in the installer.
+## Boot
+
+systemd-boot starts a signed UKI (`osmium-boot`, see `tools/src/bin/osmium-boot.rs`):
+
+- **Secure Boot**: the installer creates OsmiumOS keys (sbctl) and signs systemd-boot and every
+  UKI. If the firmware is in Setup Mode during the install, the keys are enrolled (with
+  Microsoft's, for option ROMs) and Secure Boot is on from the first boot; otherwise
+  `sudo osmium-boot guvenli` explains how to get there.
+- **TPM2 unlock**: with LUKS and Secure Boot on, the first boot enrolls the TPM (PCR 7), so the
+  passphrase is typed once and never again on that machine. The installer says beforehand
+  whether this happens on its own; otherwise a notification after the first login lists the
+  steps (`sudo osmium-boot guvenli`, then `sudo osmium-boot tpm`). Without Secure Boot the disk keeps
+  asking (a TPM bound to a firmware without Secure Boot would open for any boot medium).
+  The passphrase prompt uses the system keymap. `sudo osmium-boot tpm` re-enrolls.
+- **Self-healing updates**: a new kernel/initramfs is installed as `osmium+3.efi`; systemd-boot
+  tries it three times and keeps it only once the login screen came up. Otherwise it boots the
+  previous image (`osmium-kurtarma.efi`), which rolls the root back to the snapshot taken before
+  the update and reboots into the old, working system. `osmium-boot` shows the state.
+- **Rescue screen**: when the system lands in emergency mode, also inside the initramfs (disk not
+  found, cannot unlock), a Turkish menu shows the errors and a QR code of them, and offers to go
+  back to the previous snapshot or to boot the previous kernel once.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
-stdin (`key=value` lines). UEFI only. For manual partitioning the ISO also has Calamares
-(`sudo calamares`).
+stdin (`key=value` lines). UEFI only.
 
 ## Tools
 
@@ -162,7 +189,5 @@ Keep the secret key backed up offline; anyone holding it can publish packages yo
 Copyright (C) 2026 EtliBiftek
 
 GPL-3.0-or-later, see `LICENSE`: you can redistribute and modify OsmiumOS under the GNU
-General Public License, version 3 or any later version. The Calamares branding files in
-`packages/osmium-calamares-config/etc/calamares/branding/osmium/` (images, `show.qml`) come
-from Calamares under the same license, as their `.license` files and headers say.
+General Public License, version 3 or any later version.
 `hyprland-rust` keeps its own license (BSD-3-Clause, Smithay parts MIT).

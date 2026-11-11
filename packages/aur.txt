@@ -1,5 +1,4 @@
 # name  pinned AUR commit (review the PKGBUILD diff before bumping)
-calamares 167151beb537c06cb75c8dbfd409799ba308bb66
 anyrun d20734ea2a045d24d54e8575be58b1986af3a410
 # illogical-impulse (osmium-dots-ii) dependencies that are only in the AUR
 wlogout 9904ef2a49026b70e5288965423ee503c95f09cd

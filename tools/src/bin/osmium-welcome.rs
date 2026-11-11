@@ -51,6 +51,10 @@ fn render() -> String {
     }
     s += "\n  Ayarlar geçmişi: osmium-history   Güncelleme: osmium-update\n";
     s += "  Windows'tan taşı: osmium-migrate   Asistan: osmium-ai\n";
+    // Written by osmium-boot on the first boot of an encrypted install.
+    if std::fs::read_to_string("/var/lib/osmium/boot/tpm-durum").is_ok_and(|s| s.trim() == "guvenli-onyukleme-kapali") {
+        s += "  \x1b[38;2;255;176;0mDisk parolasız açılsın (TPM):\x1b[0m sudo osmium-boot guvenli\n";
+    }
     s += "\n  \x1b[2mKapatmak için Enter'a bas.\x1b[0m ";
     s
 }
