@@ -6,6 +6,7 @@ wireplumber
 osmium-calamares-config
 gptfdisk
 dosfstools
+efibootmgr
 cryptsetup
 squashfs-tools
 zram-generator

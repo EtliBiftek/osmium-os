@@ -28,18 +28,11 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
 - **m3ww socket path** (gaps item 25): `prepare()` rewrites `UNIX-CONNECT:/tmp/hypr/` in the eww
   scripts. Not verified that it covers every script in the gap list (`activewin`, `activews`,
   `workspaces`, `taskbarloop`, `overview-wrapper`, `hyprtest`) or that the bar updates at runtime.
-- **osmium-guest**: the owner's session is locked only if it has a lock handler (hypridle);
-  otherwise Ctrl+Alt+F<n> reaches the unlocked desktop.
-- **osmium-try**: NVIDIA proprietary device nodes are not passed into the container.
-- **osmium-hw**: NVIDIA open/legacy split by a device-id threshold, not a table.
 - **Live initramfs hooks** (`common/airootfs/etc/mkinitcpio.conf.d/archiso.conf`) are a copy of
   releng's line minus `microcode`; must follow releng when archiso changes it.
 - **Calamares**: still shipped as the manual-partitioning fallback, no longer tested since the
   KDE/GNOME editions were removed. Keep (and add a CI test) or drop.
 - **Installer UI** (`osmium-installer.qml`): never exercised in CI; only the backend is.
-- **Reinstall leaves a stale UEFI NVRAM entry** (`Boot000N "OsmiumOS"` pointing to the old ESP);
-  the fallback path boots anyway. Remove old entries with `efibootmgr` before `grub-install`.
-- **CI**: `actions/download-artifact@v4`/`upload-artifact@v4` run on deprecated Node 20; bump.
 
 ## Needs the user (never done by Claude)
 

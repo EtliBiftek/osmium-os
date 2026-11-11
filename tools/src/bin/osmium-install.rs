@@ -1060,7 +1060,32 @@ fn apply_kb_layout(dir: &Path, layout: &str) {
     }
 }
 
+/// `Boot000N` numbers of NVRAM entries labelled `label`, from `efibootmgr` output.
+fn boot_entries(efibootmgr: &str, label: &str) -> Vec<String> {
+    efibootmgr
+        .lines()
+        .filter_map(|l| {
+            let rest = l.strip_prefix("Boot")?;
+            let (num, rest) = rest.split_at_checked(4)?;
+            // `*` marks an active entry, a space an inactive one.
+            let name = rest.strip_prefix(['*', ' '])?.strip_prefix(' ')?;
+            // The label ends at a tab (efibootmgr >= 18) or at two spaces before the path.
+            let name = name.split(['\t']).next()?.split("  ").next()?.trim_end();
+            (num.chars().all(|c| c.is_ascii_hexdigit()) && name == label).then(|| num.to_string())
+        })
+        .collect()
+}
+
+/// A reinstall would otherwise leave the old entry pointing at the old ESP next to the new one.
+fn remove_old_boot_entries() {
+    let Ok(list) = output(&mut Command::new("efibootmgr")) else { return };
+    for num in boot_entries(&list, "OsmiumOS") {
+        succeeds(Command::new("efibootmgr").args(["-q", "-b", &num, "-B"]));
+    }
+}
+
 fn grub_install() -> Result {
+    remove_old_boot_entries();
     let base = ["--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=OsmiumOS"];
     if sh("grub-install", &mut ch("grub-install", &base)).is_ok() {
         // Same as Calamares installEFIFallback: firmware that ignores NVRAM entries (VirtualBox).
@@ -1113,6 +1138,19 @@ fn cleanup() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finds_old_boot_entries() {
+        let list = "BootCurrent: 0001\nTimeout: 0 seconds\nBootOrder: 0003,0001,0000\n\
+            Boot0000* UiApp\tFvVol(7cb8bdc9)/FvFile(462caa21)\n\
+            Boot0001* UEFI QEMU HARDDISK  PciRoot(0x0)/Pci(0x1,0x1)\n\
+            Boot0003* OsmiumOS\tHD(1,GPT,abc)/File(\\EFI\\OsmiumOS\\grubx64.efi)\n\
+            Boot000A  OsmiumOS  HD(1,GPT,def)/File(\\EFI\\OsmiumOS\\grubx64.efi)\n\
+            Boot0004* OsmiumOS Yedek\tHD(1,GPT,abc)\n\
+            Boot0005* osmiumos\tHD(1,GPT,abc)\n";
+        assert_eq!(boot_entries(list, "OsmiumOS"), ["0003", "000A"]);
+        assert!(boot_entries("", "OsmiumOS").is_empty());
+    }
 
     const LSBLK: &str = r#"PATH="/dev/sda" SIZE="500107862016" MODEL="Samsung SSD 860 " RM="0" TRAN="sata" TYPE="disk" RO="0"
 PATH="/dev/sdb" SIZE="16008609792" MODEL="USB\x20DISK 3.0" RM="1" TRAN="usb" TYPE="disk" RO="0"

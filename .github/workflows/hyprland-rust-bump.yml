@@ -25,7 +25,7 @@ jobs:
       UPSTREAM: EtliBiftek/hyprland-rust
       PKGBUILD: packages/hyprland-rust/PKGBUILD
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0  # git pull --rebase below
 

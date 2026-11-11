@@ -263,15 +263,85 @@ fn launch(vt: u32, active: u32) -> Result {
     run(Command::new("runuser").args(["-u", GUEST, "--", "cp", "-rT", "/etc/skel", HOME]))?;
 
     // The guest could otherwise switch back to an unlocked desktop.
-    if !succeeds(Command::new("loginctl").arg("lock-sessions")) {
-        eprintln!("UYARI: açık oturumlar kilitlenemedi; misafir Ctrl+Alt+F{active} ile masaüstünüze geçebilir");
-    }
+    lock_desktops(uid)?;
     println!(
         "Misafir oturumu tty{vt} üzerinde açılıyor. Oturum kapanınca misafirin tüm verisi silinir \
          ve tty{active} konsoluna dönülür."
     );
     let argv = session_argv(vt, active);
     run(Command::new(&argv[0]).args(&argv[1..]))
+}
+
+/// `hyprctl locked` reply: None when no compositor answered.
+fn parse_locked(reply: &str) -> Option<bool> {
+    match reply.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+/// Compositor instances of other users: (runtime dir, instance signature).
+fn desktops(guest_uid: u32) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for user in fs::read_dir("/run/user").into_iter().flatten().flatten() {
+        let name = user.file_name().to_string_lossy().into_owned();
+        if name.parse::<u32>().map_or(true, |uid| uid == guest_uid) {
+            continue;
+        }
+        let runtime = format!("/run/user/{name}");
+        for inst in fs::read_dir(format!("{runtime}/hypr")).into_iter().flatten().flatten() {
+            if inst.path().join(".socket.sock").exists() {
+                out.push((runtime.clone(), inst.file_name().to_string_lossy().into_owned()));
+            }
+        }
+    }
+    out
+}
+
+/// Root reaches every user's socket; the dispatched locker runs as that user, in that session.
+fn hyprctl_on(runtime: &str, sig: &str, args: &[&str]) -> String {
+    Command::new("hyprctl")
+        .env("XDG_RUNTIME_DIR", runtime)
+        .env("HYPRLAND_INSTANCE_SIGNATURE", sig)
+        .args(args)
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// Desktops that still answer `locked = false`.
+fn unlocked(desktops: &[(String, String)]) -> Vec<(String, String)> {
+    desktops.iter().filter(|(r, s)| parse_locked(&hyprctl_on(r, s, &["locked"])) == Some(false)).cloned().collect()
+}
+
+/// Locks every other desktop, and checks it through the compositor: `loginctl lock-sessions`
+/// only asks, and nothing locks when the session has no lock handler (hypridle).
+/// Fails when a desktop stays unlocked, so the guest never starts next to one.
+fn lock_desktops(guest_uid: u32) -> Result {
+    succeeds(Command::new("loginctl").arg("lock-sessions"));
+    let all = desktops(guest_uid);
+    let wait = |rounds: u32| {
+        for _ in 0..rounds {
+            if unlocked(&all).is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        unlocked(&all)
+    };
+    let left = wait(4);
+    for (r, s) in &left {
+        // hypridle's own lock command uses the same guard against a second locker.
+        hyprctl_on(r, s, &["dispatch", "exec", "pidof hyprlock || hyprlock"]);
+    }
+    match wait(if left.is_empty() { 0 } else { 20 }).len() {
+        0 => Ok(()),
+        n => Err(format!(
+            "{n} masaüstü kilitlenemedi; misafir oturumu açılmadı (misafir Ctrl+Alt+F ile o masaüstüne geçebilirdi). \
+             Ekranı kilitleyip yeniden deneyin."
+        )),
+    }
 }
 
 fn cleanup(vt: Option<u32>) -> Result {
@@ -326,6 +396,14 @@ fn status() -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_lock_state() {
+        assert_eq!(parse_locked("true\n"), Some(true));
+        assert_eq!(parse_locked("false"), Some(false));
+        assert_eq!(parse_locked(""), None);
+        assert_eq!(parse_locked("HYPRLAND_INSTANCE_SIGNATURE was not set"), None);
+    }
 
     const ROOT: &str = "root:x:0:0::/root:/usr/bin/bash\nali:x:1000:1000:Ali:/home/ali:/bin/bash\n";
 
