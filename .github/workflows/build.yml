@@ -226,6 +226,7 @@ jobs:
           [ -s preview-synthwave.png ] || echo "::warning::osmium-dots onizle made no screenshot in the live desktop"
           sudo grep -aq OSMIUM-UI-RUNNING ui.log || { echo "::error::the installer window did not start in the live desktop"; exit 1; }
           sudo grep -aq OSMIUM-UI-CLEAN ui.log || { echo "::error::the installer QML logged errors (see OSMIUM-UI-LOG lines)"; exit 1; }
+          sudo grep -aq OSMIUM-UI-SHELL-ALIVE ui.log || { echo "::error::the ii shell was not running next to the installer"; exit 1; }
       - uses: actions/upload-artifact@v7
         if: always()
         with:

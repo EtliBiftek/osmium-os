@@ -24,7 +24,9 @@ sleep 20
 pgrep -f osmium-installer.qml >/dev/null && echo OSMIUM-UI-RUNNING
 as() { runuser -u osmium -- env XDG_RUNTIME_DIR="$rt" WAYLAND_DISPLAY="$w" "$@"; }
 as hyprctl clients | head -30
-# A second instance with its log in reach: QML errors are printed when the file loads.
+# Our own instance with its log in reach (QML errors are printed when the file loads). The
+# auto-started one goes first: two would register the same global shortcuts.
+pkill -f osmium-installer.qml; sleep 2
 as qs -p /usr/share/osmium/dots/ii/home/.config/quickshell/ii/osmium-installer.qml >/tmp/ui.log 2>&1 &
 sleep 25
 sed 's/^/OSMIUM-UI-LOG /' /tmp/ui.log | head -60
@@ -33,6 +35,8 @@ if grep -qiE 'ReferenceError|TypeError|is not a type|is not installed|Cannot ass
 else
   echo OSMIUM-UI-CLEAN
 fi
+# Starting the installer must not take the ii shell down (shared global shortcuts once did).
+pgrep -f 'qs -c ii' >/dev/null && echo OSMIUM-UI-SHELL-ALIVE
 pkill -f 'qs -p' ; sleep 2
 as grim /tmp/s.png && echo "OSMIUM-SCREENSHOT $(base64 -w0 /tmp/s.png)"
 # Dot preview: synthwave nested in a window, screenshotted from inside.

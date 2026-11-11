@@ -122,7 +122,9 @@ ApplicationWindow {
     }
 
     Component.onCompleted: {
-        MaterialThemeLoader.reapplyTheme()
+        // No MaterialThemeLoader here: the singleton registers ii's "toggleLightDark" global
+        // shortcut, which the running ii shell already holds, and the compositor answers a
+        // second registration with a fatal protocol error. ii's default palette is used.
         disksProc.running = true
         dotsProc.running = true
         tzProc.running = true
