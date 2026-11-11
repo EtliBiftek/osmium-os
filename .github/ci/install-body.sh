@@ -34,8 +34,8 @@ if [ "$win" = 1 ]; then
   # Ours are the two partitions after Windows' four: 5 (XBOOTLDR, /boot) and 6 (root).
   dev="${disk}6"
   lsblk -o NAME,SIZE,FSTYPE,PARTTYPENAME,LABEL "$disk"
-  # ntfscat ignores the "check at next Windows boot" flag ntfsresize leaves.
-  ntfscat "${disk}3" belge.txt | grep -q merhaba && echo OSMIUM-WINDOWS-INTACT
+  # --force: ntfsresize leaves the "check at next Windows boot" flag, which ntfscat respects.
+  ntfscat --force "${disk}3" belge.txt | grep -q merhaba && echo OSMIUM-WINDOWS-INTACT
   mount -t vfat "${disk}1" /tmp/e && [ -s /tmp/e/EFI/Microsoft/Boot/bootmgfw.efi ] && [ -s /tmp/e/EFI/systemd/systemd-bootx64.efi ] \
     && grep -q "timeout 3" /tmp/e/loader/loader.conf && echo OSMIUM-ESP-SHARED-OK; umount /tmp/e
   esp="${disk}5"
