@@ -153,134 +153,101 @@ jobs:
           path: out/*.iso
           compression-level: 0
 
-  # Boots the Hyprland ISO in QEMU (UEFI), installs to a virtual disk with osmium-install
-  # (once with LUKS, once without), then boots the installed disk.
+  # Boots the Hyprland ISO in QEMU (UEFI) and installs with osmium-install three times: plain,
+  # then LUKS over it (wiping it) with Secure Boot firmware in Setup Mode and a software TPM,
+  # then plain on a second disk. Then boots both systems: the LUKS one twice (passphrase, then
+  # TPM2 unlock), the plain one through a good update and a broken one that must roll back.
+  # Scripts: .github/ci/.
   install-test:
     needs: iso
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/ci
       - uses: actions/download-artifact@v8
         with:
           name: osmiumos-hyprland
       - name: Install QEMU
-        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-x86 ovmf libarchive-tools socat
+        run: sudo apt-get update -q && sudo apt-get install -y -q qemu-system-x86 ovmf swtpm swtpm-tools libarchive-tools socat
       - name: Install from the live ISO
         run: |
           iso=$(ls *.iso)
           bsdtar -xf "$iso" arch/boot/x86_64 loader boot/grub 2>/dev/null || true
           params=$(grep -rhom1 'archisobasedir=[^ ]* archisosearchuuid=[^ ]*' loader boot | head -1)
           [ -n "$params" ] || { echo "no archiso boot parameters found in the ISO"; exit 1; }
-          cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
-          qemu-img create -q -f qcow2 disk.qcow2 24G
-          # Runs in the live system as root via systemd.run=, read straight from a read-only disk.
-          # The workflow prepends `enc=1` or `enc=0`.
-          cat > test.body <<'EOF'
-          exec >/dev/ttyS0 2>&1
-          for i in $(seq 50); do [ -e /dev/disk/by-id/virtio-target ] && break; sleep 0.2; done
-          disk=$(readlink -f /dev/disk/by-id/virtio-target)
-          echo "OSMIUM-DISKS $(osmium-install disks)"
-          printf 'disk=%s\nencrypt=%s\npassphrase=ci-test-pass\nhostname=osmium-test\nusername=tester\nfullname=Test User\npassword=ci-test-pw\ntimezone=Europe/Istanbul\nlocale=tr_TR.UTF-8\nkeymap=trq\nxkblayout=tr\ndots=ii\ndots_mode=config\n' "$disk" "$enc" \
-            | osmium-install run | sed "s/^/OSMIUM-RUN-$enc /"
-          # Whatever still holds the target after the installer returned (should be nothing).
-          findmnt -rn -o TARGET,SOURCE | grep -E '^/mnt|cryptroot' | sed 's/^/OSMIUM-LEFT-MOUNT /'
-          [ -e /dev/mapper/cryptroot ] && echo "OSMIUM-LEFT-OPEN $(dmsetup info -c --noheadings -o name,open cryptroot)"
-          for p in /proc/[0-9]*; do
-            grep -qE "cryptroot|$disk" "$p/mountinfo" 2>/dev/null \
-              && echo "OSMIUM-HOLDER ${p#/proc/} $(cat "$p/comm") root=$(readlink "$p/root") ns=$(readlink "$p/ns/mnt")"
-          done | head -20
-          mkdir -p /tmp/r
-          if [ "$enc" = 1 ]; then
-            # The encrypted install is only checked for a root that unlocks and mounts.
-            dev=/dev/mapper/citest
-            printf ci-test-pass | cryptsetup open --key-file=- "${disk}2" citest || dev=/dev/mapper/cryptroot
-            mount -o ro,subvol=@ "$dev" /tmp/r && [ -s /tmp/r/boot/grub/grub.cfg ] && [ -s /tmp/r/boot/initramfs-linux-zen.img ] \
-              && echo OSMIUM-LUKS-OK
-            # GRUB reads the passphrase with a US keymap: slot 0 holds what the same keys type there (tr).
-            printf "c'=test=pass" | cryptsetup open --test-passphrase --key-slot 0 --key-file=- "${disk}2" && echo OSMIUM-GRUBKEY-OK
-            poweroff -f
-            sleep 60
-          fi
-          mount -o subvol=@ "${disk}2" /tmp/r || { echo OSMIUM-INSTALL-FAILED; poweroff -f; sleep 60; }
-          cat /tmp/r/etc/fstab
-          cat > /tmp/r/usr/local/bin/osmium-boot-test <<'SH'
-          #!/bin/sh
-          exec >/dev/ttyS0 2>&1
-          sleep 20
-          echo "OSMIUM-FAILED-UNITS $(systemctl --failed --no-legend --plain | tr '\n' ';')"
-          echo "OSMIUM-GREETD $(systemctl is-active greetd)"
-          journalctl -b -p err --no-pager | tail -40
-          [ -d /home/tester/.config/quickshell/ii ] && echo OSMIUM-DOTS-OK
-          # Smoke-run the read-only tools on a real installed system (output only, never fatal).
-          for t in "osmium-doctor" "osmium-hw" "osmium-changes list" "osmium-auto check" "osmium-battery" "osmium-guest status" "osmium-apply plan /dev/null"; do
-            echo "OSMIUM-TOOL $t -> exit $(timeout 60 $t </dev/null >/tmp/t.out 2>&1; echo $?)"
-            head -c 1500 /tmp/t.out | sed 's/^/  | /'
-          done
-          pacman -Qkq >/tmp/qk 2>&1 && echo OSMIUM-PKG-FILES-OK || sed 's/^/OSMIUM-MISSING /' /tmp/qk | head -20
-          snapper --no-dbus -c root list | grep -q Kurulum && echo OSMIUM-SNAPSHOT-OK
-          [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && echo OSMIUM-BOOT-OK
-          systemctl poweroff
-          SH
-          chmod +x /tmp/r/usr/local/bin/osmium-boot-test
-          printf '[Unit]\nAfter=systemd-user-sessions.service\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/osmium-boot-test\n' \
-            > /tmp/r/etc/systemd/system/osmium-boot-test.service
-          ln -s ../osmium-boot-test.service /tmp/r/etc/systemd/system/multi-user.target.wants/
-          [ -s /tmp/r/boot/grub/grub.cfg ] && grep -q '^tester:' /tmp/r/etc/passwd && echo OSMIUM-INSTALL-OK
-          umount /tmp/r; sync
-          poweroff -f
-          sleep 60
-          EOF
-          cat > vm.sh <<'EOF'
-          #!/bin/sh
-          # vm.sh <log> [extra qemu args]: the VM with the target disk; serial goes to <log>.
-          log=$1; shift
-          exec timeout 20m qemu-system-x86_64 -enable-kvm -cpu host -machine q35 -m 6G -smp 4 -display none -no-reboot \
-            -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd \
-            -drive if=pflash,format=raw,file=vars.fd \
-            -drive if=none,id=t,file=disk.qcow2,format=qcow2,discard=unmap -device virtio-blk-pci,drive=t,serial=target \
-            -nic user,model=virtio-net-pci -monitor unix:mon.sock,server,nowait -serial "file:$log" "$@"
-          EOF
-          chmod +x vm.sh
-          # Encrypted first, then unencrypted over it (the second run also has to wipe the first).
-          for enc in 1 0; do
-            { echo "enc=$enc"; cat test.body; } > test.img
+          for d in luks plain; do qemu-img create -q -f qcow2 disk-$d.qcow2 24G; done
+          for v in wipe luks plain; do cp /usr/share/OVMF/OVMF_VARS_4M.fd vars-$v.fd; done
+          mkdir -p tpm
+          # inst <enc> <disk> <vars> <secure boot> <log name>
+          inst() {
+            { echo "enc=$1"; echo "cat > /tmp/boot-test.sh <<'BOOTTEST'"; cat .github/ci/boot-test.sh; echo BOOTTEST
+              cat .github/ci/install-body.sh; } > test.img
             truncate -s 1M test.img
-            sudo ./vm.sh install-$enc.log -cdrom "$iso" \
+            if [ "$4" = 1 ]; then sudo pkill swtpm; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; fi
+            sudo env DISK=$2 VARS=$3 SB=$4 .github/ci/vm.sh install-$5.log -cdrom "$iso" \
               -drive if=none,id=s,file=test.img,format=raw,readonly=on -device virtio-blk-pci,drive=s,serial=osmtest \
               -kernel arch/boot/x86_64/vmlinuz-linux-zen -initrd arch/boot/x86_64/initramfs-linux-zen.img \
               -append "$params console=ttyS0 systemd.run=\"/bin/sh /dev/disk/by-id/virtio-osmtest\"" || true
-            grep -a 'OSMIUM-' install-$enc.log | grep -av '"step":"copy"' | cut -c1-400 || true
-          done
-          grep -aq OSMIUM-LUKS-OK install-1.log || { echo "::error::encrypted install failed"; tail -60 install-1.log; exit 1; }
-          grep -aq OSMIUM-GRUBKEY-OK install-1.log || { echo "::error::no LUKS key slot for the passphrase as GRUB reads it"; exit 1; }
-          grep -aq OSMIUM-INSTALL-OK install-0.log || { echo "::error::install failed"; tail -60 install-0.log; exit 1; }
-          for enc in 1 0; do
-            echo "Install (encrypt=$enc, 4 cores): $(grep -ao 'OSMIUM-RUN-. {"done":true,"seconds":[0-9]*' install-$enc.log | grep -o '[0-9]*$') s" >> "$GITHUB_STEP_SUMMARY"
+            grep -a 'OSMIUM-' install-$5.log | grep -av '"step":"copy"' | cut -c1-400 || true
+          }
+          inst 0 disk-luks.qcow2 vars-wipe.fd 0 wipe
+          inst 1 disk-luks.qcow2 vars-luks.fd 1 luks
+          inst 0 disk-plain.qcow2 vars-plain.fd 0 plain
+          grep -aq OSMIUM-INSTALL-OK install-wipe.log || { echo "::error::first plain install failed"; tail -60 install-wipe.log; exit 1; }
+          grep -aq OSMIUM-LUKS-OK install-luks.log || { echo "::error::encrypted install failed"; tail -60 install-luks.log; exit 1; }
+          grep -aq OSMIUM-LUKS2-OK install-luks.log || { echo "::error::the disk is not LUKS2"; exit 1; }
+          grep -aq OSMIUM-INSTALL-OK install-plain.log || { echo "::error::install failed"; tail -60 install-plain.log; exit 1; }
+          for l in luks plain; do
+            grep -aq OSMIUM-ESP-OK install-$l.log || { echo "::error::$l: no signed UKI / systemd-boot on the ESP"; exit 1; }
+            echo "Install ($l, 4 cores): $(grep -ao 'OSMIUM-RUN-. {"done":true,"seconds":[0-9]*' install-$l.log | grep -o '[0-9]*$') s" >> "$GITHUB_STEP_SUMMARY"
           done
           if grep -aq 'OSMIUM-LEFT-' install-*.log; then echo "::warning::the installer left the target disk mounted or open"; fi
-      - name: Boot the installed system
+      - name: Boot the plain install (update, bless, broken update, rollback)
         run: |
-          sudo ./vm.sh boot.log &
-          for i in $(seq 120); do
-            sleep 5
-            sudo grep -aq OSMIUM-BOOT-OK boot.log 2>/dev/null && break
-            pgrep -f qemu-system >/dev/null || break
-          done
-          sudo cat boot.log | cut -c1-400 || true
-          if ! sudo grep -aq OSMIUM-BOOT-OK boot.log; then
-            echo "screendump screen.ppm" | sudo socat - unix-connect:mon.sock || true
-            sleep 2; echo "::error::the installed system did not boot to multi-user"; exit 1
-          fi
-          sudo grep -aq OSMIUM-DOTS-OK boot.log || echo "::warning::ii dots were not applied to the installed user"
-          sudo grep -aq OSMIUM-PKG-FILES-OK boot.log || echo "::warning::installed packages are missing files (pacman -Qk)"
-          sudo grep -aq OSMIUM-SNAPSHOT-OK boot.log || echo "::warning::no 'Kurulum' snapper snapshot after install"
+          # Reboots are allowed: the test reboots twice itself, and the broken kernel three times.
+          sudo env DISK=disk-plain.qcow2 VARS=vars-plain.fd REBOOT=1 MINUTES=25 .github/ci/vm.sh boot-plain.log || true
+          sudo cat boot-plain.log | cut -c1-400 || true
+          need() { sudo grep -aq "OSMIUM-$1" boot-plain.log || { echo "::error::$2"; exit 1; }; }
+          need BOOT-OK "the installed system did not boot to multi-user"
+          sudo grep -aq OSMIUM-DOTS-OK boot-plain.log || echo "::warning::ii dots were not applied to the installed user"
+          sudo grep -aq OSMIUM-PKG-FILES-OK boot-plain.log || echo "::warning::installed packages are missing files (pacman -Qk)"
+          sudo grep -aq OSMIUM-SNAPSHOT-OK boot-plain.log || echo "::warning::no 'Kurulum' snapper snapshot after install"
           # Serial log lines end in CR, so require a unit name, not just any character.
-          if sudo grep -aqE "OSMIUM-FAILED-UNITS [[:alnum:]@_.-]+" boot.log; then echo "::error::units failed on the installed system"; exit 1; fi
+          if sudo grep -aqE "OSMIUM-FAILED-UNITS [[:alnum:]@_.-]+" boot-plain.log; then echo "::error::units failed on the installed system"; exit 1; fi
+          need UPDATE-ARMED "osmium-boot kur did not install the update"
+          need BLESS-OK "the updated entry was not blessed after a good boot"
+          need BROKEN-BUILT "could not build the broken test kernel"
+          need ROLLBACK-OK "a kernel that does not boot was not rolled back"
+      - name: Boot the LUKS install (Secure Boot, then TPM2 unlock)
+        run: |
+          tpm() { sudo pkill swtpm; sleep 1; sudo swtpm socket --tpmstate dir=tpm --ctrl type=unixio,path=tpm.sock --tpm2 --daemon; }
+          tpm
+          # First boot: the passphrase comes as a systemd credential; typed keys are the fallback
+          # (only letters and digits: the initramfs keymap is Turkish Q).
+          ( for r in 1 2 3; do sleep 45; for k in p a r o l a 2 0 2 6 s v ret; do echo "sendkey $k" | sudo socat - unix-connect:mon.sock >/dev/null 2>&1; done; done ) &
+          sudo env DISK=disk-luks.qcow2 VARS=vars-luks.fd SB=1 MINUTES=10 .github/ci/vm.sh boot-luks-1.log \
+            -smbios type=11,value=io.systemd.credential:cryptsetup.passphrase=parola2026sv || true
+          wait
+          sudo cat boot-luks-1.log | cut -c1-400 || true
+          tpm
+          # Second boot: nothing types the passphrase; only the TPM can open the disk.
+          sudo env DISK=disk-luks.qcow2 VARS=vars-luks.fd SB=1 MINUTES=6 .github/ci/vm.sh boot-luks-2.log || true
+          sudo cat boot-luks-2.log | cut -c1-400 || true
+          sudo grep -aq OSMIUM-BOOT-OK boot-luks-1.log || { echo "::error::the encrypted system did not boot"; exit 1; }
+          sudo grep -aq "OSMIUM-SECUREBOOT 1 SETUPMODE 0" boot-luks-1.log || { echo "::error::Secure Boot is not on after the install enrolled the keys"; exit 1; }
+          sudo grep -aq OSMIUM-TPM-ENROLLED boot-luks-1.log || { echo "::error::no TPM2 token after the first boot"; exit 1; }
+          sudo grep -aq OSMIUM-TPM-KEY-GONE boot-luks-1.log || echo "::warning::the one-time key file is still there"
+          sudo grep -aq OSMIUM-TPM-UNLOCK-OK boot-luks-2.log || { echo "::error::the disk did not open with the TPM"; exit 1; }
+      - name: Screen of a hung VM
+        if: failure()
+        run: echo "screendump screen.ppm" | sudo socat - unix-connect:mon.sock || true
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: install-test-logs
           path: |
             install-*.log
-            boot.log
+            boot-*.log
             screen.ppm

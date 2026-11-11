@@ -1,0 +1,13 @@
+# After mkinitcpio rebuilt /boot/osmium.efi: sign it and install it as a counted boot entry,
+# keeping the previous one as the rescue copy. A no-op when the image did not change.
+[Trigger]
+Type = Package
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Target = *
+
+[Action]
+Description = OsmiumOS açılış görüntüsü güncelleniyor...
+When = PostTransaction
+Exec = /usr/bin/osmium-boot kur

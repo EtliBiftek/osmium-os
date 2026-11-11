@@ -57,15 +57,30 @@ widgets (`~/.config/quickshell/ii/osmium-installer.qml`). It asks for a disk (op
 region, user and desktop (built-in dots or one found on GitHub), then runs
 `sudo osmium-install run`, which:
 
-- partitions GPT (1 GiB ESP + btrfs with `@ @home @cache @log`, zstd:1),
+- partitions GPT (1 GiB ESP at `/efi` + btrfs with `@ @home @cache @log @snapshots`, zstd:1,
+  `@` as the default subvolume), with LUKS2 if asked,
 - unpacks the live squashfs with every core (`unsquashfs`), no downloads,
-- configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 initramfs
-  (no fallback image) and installs GRUB with grub-btrfs snapshots, in parallel where possible.
+- configures locale, user and keyboard, runs `osmium-postinstall`, builds a zstd -1 unified
+  kernel image (UKI) and installs systemd-boot, in parallel where possible.
 
-With LUKS, GRUB asks for the passphrase before any keymap is loaded and reads the keys as a US
-keyboard. For the Turkish, German and French layouts the installer therefore adds a second key
-slot holding what the same key presses type on a US layout, so the passphrase opens the disk at
-boot exactly as it was typed in the installer.
+## Boot
+
+systemd-boot starts a signed UKI (`osmium-boot`, see `tools/src/bin/osmium-boot.rs`):
+
+- **Secure Boot**: the installer creates OsmiumOS keys (sbctl) and signs systemd-boot and every
+  UKI. If the firmware is in Setup Mode during the install, the keys are enrolled (with
+  Microsoft's, for option ROMs) and Secure Boot is on from the first boot; otherwise
+  `sudo osmium-boot guvenli` explains how to get there.
+- **TPM2 unlock**: with LUKS and Secure Boot on, the first boot enrolls the TPM (PCR 7), so the
+  passphrase is typed once and never again on that machine. Without Secure Boot the disk keeps
+  asking (a TPM bound to a firmware without Secure Boot would open for any boot medium).
+  The passphrase prompt uses the system keymap. `sudo osmium-boot tpm` re-enrolls.
+- **Self-healing updates**: a new kernel/initramfs is installed as `osmium+3.efi`; systemd-boot
+  tries it three times and keeps it only once the login screen came up. Otherwise it boots the
+  previous image (`osmium-kurtarma.efi`), which rolls the root back to the snapshot taken before
+  the update and reboots into the old, working system. `osmium-boot` shows the state.
+- **Rescue screen**: when the system lands in emergency mode, a Turkish menu shows the errors and
+  a QR code of them, and offers to go back to the previous snapshot.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
 stdin (`key=value` lines). UEFI only.

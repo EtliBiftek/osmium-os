@@ -1,0 +1,11 @@
+[Unit]
+Description=OsmiumOS: TPM2 disk unlock after the first boot
+ConditionPathExists=/var/lib/osmium/boot/tpm.key
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/osmium-boot ilk
+
+[Install]
+WantedBy=multi-user.target

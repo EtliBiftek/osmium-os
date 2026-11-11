@@ -8,9 +8,6 @@ rsync
 btrfs-progs
 snapper
 snap-pac
-grub
-grub-btrfs
-inotify-tools
 networkmanager
 gptfdisk
 dosfstools

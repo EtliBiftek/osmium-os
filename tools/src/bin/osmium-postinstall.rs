@@ -51,10 +51,13 @@ fn main() {
 }
 
 /// Replaces releng's archiso-only preset of kernel package `pkgbase` (linux-zen), whose config
-/// file is removed above. No fallback image: it doubles initramfs build time; grub-btrfs
-/// snapshots are the rescue path.
+/// file is removed above. Builds the UKI osmium-boot installs (/boot/osmium.efi, with
+/// /etc/kernel/cmdline) and keeps the plain initramfs next to the kernel. No fallback image: it
+/// doubles build time; osmium-boot's rescue copy and snapper rollback are the rescue path.
 fn preset(pkgbase: &str) -> String {
-    format!("ALL_kver='/boot/vmlinuz-{pkgbase}'\nPRESETS=('default')\ndefault_image='/boot/initramfs-{pkgbase}.img'\n")
+    format!(
+        "ALL_kver='/boot/vmlinuz-{pkgbase}'\nPRESETS=('default')\ndefault_image='/boot/initramfs-{pkgbase}.img'\ndefault_uki='/boot/osmium.efi'\n"
+    )
 }
 
 /// Fast initramfs: zstd level 1 on all cores (conf.d is read after mkinitcpio.conf).
@@ -236,6 +239,7 @@ mod tests {
         assert!(!p.contains("archiso"));
         assert!(p.contains("PRESETS=('default')") && !p.contains("fallback"));
         assert!(p.contains("ALL_kver='/boot/vmlinuz-linux-zen'") && p.contains("'/boot/initramfs-linux-zen.img'"));
+        assert!(p.contains("default_uki='/boot/osmium.efi'"));
         assert!(valid_pkgbase("linux-zen") && valid_pkgbase("linux"));
         assert!(!valid_pkgbase("") && !valid_pkgbase("linux/../x") && !valid_pkgbase("zen"));
         assert!(INITCPIO_COMPRESS.contains("zstd") && INITCPIO_COMPRESS.contains("-T0"));

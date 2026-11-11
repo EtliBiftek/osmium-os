@@ -3,12 +3,14 @@
 pkgname=osmium-tools
 pkgver=0.6.0
 pkgrel=1
-pkgdesc="OsmiumOS system tools (Rust): modes, config history, update rehearsal, health check, snapshots diff, sandboxed try, guest session, battery budget, installer backend"
+pkgdesc="OsmiumOS system tools (Rust): boot chain, modes, config history, update rehearsal, health check, snapshots diff, sandboxed try, guest session, battery budget, installer backend"
 arch=('x86_64')
 url="https://github.com/EtliBiftek/osmium-os"
 license=('GPL-3.0-or-later')
 depends=('glibc' 'gcc-libs' 'git' 'curl' 'pacman-contrib' 'sudo' 'util-linux' 'ntfs-3g' 'xdg-user-dirs' 'fontconfig'
-         'systemd' 'btrfs-progs' 'snapper' 'procps-ng' 'shadow' 'kbd')
+         'systemd' 'btrfs-progs' 'snapper' 'procps-ng' 'shadow' 'kbd'
+         # osmium-boot: signed UKIs, TPM2 unlock, rescue QR code
+         'sbctl' 'systemd-ukify' 'tpm2-tss' 'cryptsetup' 'qrencode' 'mkinitcpio')
 optdepends=(
   'hyprland-rust: osmium-mode, osmium-auto, osmium-battery'
   'anyrun: osmium-mode menu'
@@ -32,8 +34,10 @@ build() {
 package() {
   install -Dm644 "${OSMIUM_SRC:?build with osmium-build}/LICENSE" -t "$pkgdir/usr/share/licenses/$pkgname/"
   local data="$OSMIUM_SRC/tools/data"
-  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,install,dots,mode,history,update,share,ai,migrate,welcome,hw,doctor,changes,try,guest,auto,battery,apply} -t "$pkgdir/usr/bin/"
+  install -Dm755 "$srcdir"/target/release/osmium-{postinstall,install,dots,mode,history,update,share,ai,migrate,welcome,hw,doctor,changes,try,guest,auto,battery,apply,boot} -t "$pkgdir/usr/bin/"
   install -Dm644 "$data"/systemd-system/*.service -t "$pkgdir/usr/lib/systemd/system/"
+  install -Dm644 "$data"/systemd-system/emergency.service.d/*.conf -t "$pkgdir/usr/lib/systemd/system/emergency.service.d/"
+  install -Dm644 "$data"/libalpm/*.hook -t "$pkgdir/usr/share/libalpm/hooks/"
   install -Dm644 "$data"/polkit/50-osmium-guest.rules -t "$pkgdir/usr/share/polkit-1/rules.d/"
   # Removes a guest account a crash left behind, before anyone can log in.
   install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"

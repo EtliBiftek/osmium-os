@@ -446,8 +446,9 @@ const CONTAINER_ONLY_FAILURES: &[&str] = &[
     "systemd-udev",
     "NetworkManager-wait-online",
     "greetd",
-    // The copy holds no /.snapshots subvolume and grub-probe finds no real disk.
-    "grub-btrfsd",
+    // No ESP in the copy; the boot check waits for a display manager that cannot start there.
+    "systemd-boot-update",
+    "osmium-boot-ok",
     "snapper-",
 ];
 
@@ -719,7 +720,7 @@ mod tests {
             "greetd.service",
             "dev-sda1.device",
             "dev-zram0.swap",
-            "grub-btrfsd.service",
+            "osmium-boot-ok.service",
             "snapper-timeline.service",
             "snapper-cleanup.service",
         ] {

@@ -1,0 +1,16 @@
+[Unit]
+Description=OsmiumOS: mark this boot as good once the login screen runs
+# systemd-bless-boot runs after boot-complete.target and only then makes a new kernel the
+# known-good one. A boot that never reaches the display manager stays on probation, and after
+# three of them systemd-boot boots the rescue copy (see osmium-boot).
+Requires=boot-complete.target
+Before=boot-complete.target
+After=display-manager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/systemctl is-active --quiet display-manager.service
+
+[Install]
+RequiredBy=boot-complete.target
