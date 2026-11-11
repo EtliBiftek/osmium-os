@@ -1,6 +1,6 @@
 # OsmiumOS: unfinished and not started work
 
-State at the `ccr-5167ad5a-uh14lf` branch (2026-11-11). Branch builds run the whole pipeline
+State at the `ccr-5167ad5a-uh14lf` branch (2026-11-11), branch build #62 green. Branch builds run the whole pipeline
 without publishing (`workflow_dispatch` on the branch). hyprland-rust gaps are tracked separately
 in `docs/hyprland-rust-gaps.md`.
 
@@ -19,6 +19,11 @@ in `docs/hyprland-rust-gaps.md`.
 - Calamares removed; kernel is `linux-zen`.
 
 ## Not started
+
+- **Installer colors**: the installer no longer loads ii's `MaterialThemeLoader` (its global
+  shortcut collides with the running shell's), so it shows ii's default palette instead of the
+  wallpaper colors. Reading `~/.local/state/quickshell/user/generated/colors.json` directly would
+  bring them back.
 
 - **Dot mixing beyond color, wallpaper and bar**: other parts (launcher, notifications, lock
   screen) need each dot to declare how to stop its own; ii's bar is part of its shell and cannot
