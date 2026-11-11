@@ -63,6 +63,8 @@ install -m755 /tmp/boot-test.sh /tmp/r/usr/local/bin/osmium-boot-test
 printf '[Unit]\nAfter=systemd-user-sessions.service\n[Service]\nType=oneshot\nExecStart=/usr/local/bin/osmium-boot-test\n' \
   > /tmp/r/etc/systemd/system/osmium-boot-test.service
 ln -s ../osmium-boot-test.service /tmp/r/etc/systemd/system/multi-user.target.wants/
+# A login prompt on ttyS0 hangs the port up (vhangup), and the test's output with it.
+ln -sf /dev/null /tmp/r/etc/systemd/system/serial-getty@ttyS0.service
 grep -q '^tester:' /tmp/r/etc/passwd && echo OSMIUM-INSTALL-OK
 umount /tmp/r; sync
 poweroff -f

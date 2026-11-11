@@ -5,6 +5,8 @@ exec >/dev/ttyS0 2>&1
 uid=$(id -u osmium)
 rt=/run/user/$uid
 # systemd.run boots only this unit: bring up the normal system (logind, getty autologin on tty1).
+# A login prompt on ttyS0 would hang the port up (vhangup), and this script's output with it.
+systemctl mask --runtime serial-getty@ttyS0.service
 systemctl start --no-block multi-user.target
 sleep 5
 systemctl start getty@tty1.service

@@ -979,7 +979,7 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
     snapshots_subvol(lay).map_err(at("boot"))?;
 
     std::thread::scope(|s| {
-        let loader = s.spawn(|| -> Result { install_loader(lay.xbootldr.is_some()) });
+        let loader = s.spawn(|| -> Result { install_loader(&c.disk, &lay.esp, lay.xbootldr.is_some()) });
         let services = s.spawn(|| -> Result {
             for (unit, on) in SERVICES {
                 // Missing units are fine (edition-dependent).
@@ -1040,7 +1040,7 @@ fn snapshots_subvol(lay: &Layout) -> Result {
 
 /// Secure Boot keys (enrolled right away when the firmware is in Setup Mode), a signed
 /// systemd-boot, and the loader config. The UKI itself comes later (`osmium-boot kur`).
-fn install_loader(xbootldr: bool) -> Result {
+fn install_loader(disk: &str, esp: &str, xbootldr: bool) -> Result {
     remove_old_boot_entries();
     sh("sbctl create-keys", &mut ch("sbctl", &["create-keys"]))?;
     let stub = "/usr/lib/systemd/boot/efi/systemd-bootx64.efi";
@@ -1052,8 +1052,13 @@ fn install_loader(xbootldr: bool) -> Result {
         c.env("SYSTEMD_RELAX_ESP_CHECKS", "1");
         sh("bootctl install", &mut c)
     };
-    // Without EFI variables (some VMs), the fallback path /EFI/BOOT/BOOTX64.EFI still boots.
-    bootctl(&[]).or_else(|_| bootctl(&["--no-variables"]))?;
+    // In the chroot bootctl cannot see the ESP's partition GUID and would write a boot entry
+    // pointing nowhere (only the fallback /EFI/BOOT/BOOTX64.EFI path then boots, and next to
+    // Windows the firmware starts Windows). The entry is made from outside instead.
+    bootctl(&["--no-variables"])?;
+    if let Err(e) = add_boot_entry(disk, esp) {
+        emit("boot", plan_step("boot").0, &format!("uyarı: UEFI açılış girdisi eklenemedi, yedek yoldan açılacak: {e}"));
+    }
     // Next to Windows the menu shows for a moment, so Windows can be picked.
     let conf = if xbootldr { LOADER_CONF.replace("timeout 0", "timeout 3") } else { LOADER_CONF.to_string() };
     write_to(&format!("{ESP_MOUNT}/loader/loader.conf"), &conf)?;
@@ -1064,6 +1069,21 @@ fn install_loader(xbootldr: bool) -> Result {
         }
     }
     Ok(())
+}
+
+/// NVRAM entry for systemd-boot on `esp`, first in BootOrder (efibootmgr puts new entries first).
+fn add_boot_entry(disk: &str, esp: &str) -> Result {
+    if !Path::new("/sys/firmware/efi/efivars").is_dir() {
+        return Ok(());
+    }
+    let n = part_number(disk, esp).ok_or_else(|| format!("{esp}: bölüm numarası okunamadı"))?;
+    sh(
+        "efibootmgr",
+        Command::new("efibootmgr").args([
+            "--quiet", "--create", "--disk", disk, "--part", &n.to_string(), "--label", "OsmiumOS",
+            "--loader", "\\EFI\\systemd\\systemd-bootx64.efi",
+        ]),
+    )
 }
 
 /// The firmware accepts new Secure Boot keys without a signature (SetupMode = 1).
