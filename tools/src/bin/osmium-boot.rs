@@ -576,42 +576,99 @@ fn rollback_to(n: u32) -> Result {
     Ok(())
 }
 
+/// The rescue menu's choices; the initramfs has no root file system, so no snapshots there.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Choice {
+    Rollback,
+    PreviousKernel,
+    Shell,
+    Reboot,
+}
+
+fn menu(in_initrd: bool) -> Vec<(Choice, &'static str)> {
+    let mut v = Vec::new();
+    if !in_initrd {
+        v.push((Choice::Rollback, "Önceki anlık görüntüye dön (son güncellemeden önceki hal)"));
+    }
+    v.push((Choice::PreviousKernel, "Önceki çekirdekle bir kez aç"));
+    v.push((Choice::Shell, "Komut satırı (root parolası ister)"));
+    v.push((Choice::Reboot, "Yeniden başlat"));
+    v
+}
+
+/// efivarfs contents of a systemd-boot string variable: attributes (non-volatile, boot and
+/// runtime access), then UTF-16LE with a NUL.
+fn efi_var_bytes(value: &str) -> Vec<u8> {
+    let mut v = vec![7, 0, 0, 0];
+    v.extend(value.encode_utf16().chain([0]).flat_map(u16::to_le_bytes));
+    v
+}
+
+/// Next boot only: systemd-boot starts the rescue copy (the kernel before the last update).
+/// Works from the initramfs too, where the root (and with it the ESP) may be unreachable.
+fn boot_previous_once() -> Result {
+    let path = format!("{EFIVARS}/LoaderEntryOneShot-{LOADER_GUID}");
+    // efivarfs marks existing variables immutable.
+    succeeds(Command::new("chattr").args(["-i", &path]));
+    fs::write(&path, efi_var_bytes(RESCUE)).map_err(|e| format!("{path}: {e}"))
+}
+
 fn rescue() -> Result {
+    let in_initrd = Path::new("/etc/initrd-release").exists();
     let kernel = output(Command::new("uname").arg("-r")).unwrap_or_default();
     let failed = failed_units();
     let errors = output(Command::new("journalctl").args(["-b", "-p", "err", "-n", "25", "--no-pager", "-o", "cat"])).unwrap_or_default();
     let summary = qr_text(kernel.trim(), &failed, &errors);
+    let choices = menu(in_initrd);
     loop {
-        println!("\n=== OsmiumOS kurtarma ===\nSistem açılırken bir sorun oldu.\n");
+        println!("\n=== OsmiumOS kurtarma ===");
+        println!("{}\n", if in_initrd { "Sistem diski açılamadı ya da bulunamadı." } else { "Sistem açılırken bir sorun oldu." });
         println!("{summary}\n");
         println!("Bu kod hata özetini içerir: telefonla okutup yardım isterken paylaşabilirsiniz.");
         show_qr(&summary);
-        let csv = output(Command::new("snapper").args(["--no-dbus", "-c", "root", "--csvout", "list", "--columns", "number,type"]))
-            .unwrap_or_default();
-        let target = fs::read_to_string(state("geri-don")).ok().and_then(|s| s.trim().parse().ok()).or_else(|| latest_pre(&csv));
-        match target {
-            Some(n) => println!("\n1) Önceki anlık görüntüye dön (#{n}, son güncellemeden önceki hal)"),
-            None => println!("\n1) Önceki anlık görüntüye dön (anlık görüntü yok)"),
+        let target: Option<u32> = if in_initrd {
+            None
+        } else {
+            let csv = output(Command::new("snapper").args(["--no-dbus", "-c", "root", "--csvout", "list", "--columns", "number,type"]))
+                .unwrap_or_default();
+            fs::read_to_string(state("geri-don")).ok().and_then(|s| s.trim().parse().ok()).or_else(|| latest_pre(&csv))
+        };
+        println!();
+        for (i, (c, text)) in choices.iter().enumerate() {
+            let extra = match (c, target) {
+                (Choice::Rollback, Some(n)) => format!(" (#{n})"),
+                (Choice::Rollback, None) => " (anlık görüntü yok)".into(),
+                _ => String::new(),
+            };
+            println!("{}) {text}{extra}", i + 1);
         }
-        println!("2) Komut satırı (root parolası ister)\n3) Yeniden başlat\nSeçiminiz: ");
+        print!("Seçiminiz: ");
         let _ = std::io::stdout().flush();
-        let Some(choice) = read_line() else { return Ok(()) };
-        match (choice.as_str(), target) {
-            ("1", Some(n)) => match rollback_to(n) {
+        let Some(line) = read_line() else { return Ok(()) };
+        let picked = line.parse::<usize>().ok().and_then(|n| choices.get(n.wrapping_sub(1))).map(|(c, _)| *c);
+        match picked {
+            Some(Choice::Rollback) => match target.ok_or_else(|| "anlık görüntü yok".to_string()).and_then(rollback_to) {
                 Ok(()) => {
-                    println!("#{n} anlık görüntüsüne dönüldü, yeniden başlatılıyor.");
+                    println!("Geri dönüldü, yeniden başlatılıyor.");
                     return run(Command::new("systemctl").arg("reboot"));
                 }
                 Err(e) => println!("Geri dönülemedi: {e}"),
             },
-            ("2", _) => {
+            Some(Choice::PreviousKernel) => match boot_previous_once() {
+                Ok(()) => {
+                    println!("Bir sonraki açılış önceki çekirdekle; yeniden başlatılıyor.");
+                    return run(Command::new("systemctl").arg("reboot"));
+                }
+                Err(e) => println!("Ayarlanamadı: {e}"),
+            },
+            Some(Choice::Shell) => {
                 let shell = Command::new("/usr/lib/systemd/systemd-sulogin-shell").arg("emergency").status();
                 if shell.is_err() {
                     let _ = Command::new("/usr/bin/sulogin").status();
                 }
             }
-            ("3", _) => return run(Command::new("systemctl").arg("reboot")),
-            _ => {}
+            Some(Choice::Reboot) => return run(Command::new("systemctl").arg("reboot")),
+            None => {}
         }
     }
 }
@@ -619,6 +676,18 @@ fn rescue() -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rescue_menu() {
+        let main: Vec<Choice> = menu(false).into_iter().map(|(c, _)| c).collect();
+        assert_eq!(main, [Choice::Rollback, Choice::PreviousKernel, Choice::Shell, Choice::Reboot]);
+        let initrd: Vec<Choice> = menu(true).into_iter().map(|(c, _)| c).collect();
+        assert_eq!(initrd, [Choice::PreviousKernel, Choice::Shell, Choice::Reboot], "no snapshots without a root");
+        let b = efi_var_bytes("osmium-kurtarma.efi");
+        assert_eq!(&b[..6], &[7, 0, 0, 0, b'o', 0]);
+        assert_eq!(efi_string(&b), "osmium-kurtarma.efi");
+        assert!(b.ends_with(&[0, 0]));
+    }
 
     #[test]
     fn tpm_status_round_trip() {

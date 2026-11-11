@@ -38,6 +38,9 @@ package() {
   install -Dm644 "$data"/systemd-system/*.service -t "$pkgdir/usr/lib/systemd/system/"
   install -Dm644 "$data"/systemd-system/emergency.service.d/*.conf -t "$pkgdir/usr/lib/systemd/system/emergency.service.d/"
   install -Dm644 "$data"/libalpm/*.hook -t "$pkgdir/usr/share/libalpm/hooks/"
+  # Rescue menu inside the initramfs (HOOKS=(... osmium-kurtar), set by osmium-install).
+  install -Dm644 "$data"/initcpio/osmium-kurtar -t "$pkgdir/usr/lib/initcpio/install/"
+  install -Dm644 "$data"/initcpio/emergency-osmium.conf -t "$pkgdir/usr/share/osmium/initcpio/"
   install -Dm644 "$data"/polkit/50-osmium-guest.rules -t "$pkgdir/usr/share/polkit-1/rules.d/"
   # Removes a guest account a crash left behind, before anyone can log in.
   install -d "$pkgdir/usr/lib/systemd/system/multi-user.target.wants"

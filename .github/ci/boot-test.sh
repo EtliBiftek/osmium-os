@@ -18,6 +18,9 @@ checks() {
   done
   pacman -Qkq >/tmp/qk 2>&1 && say PKG-FILES-OK || sed 's/^/OSMIUM-MISSING /' /tmp/qk | head -20
   snapper --no-dbus -c root list | grep -q Kurulum && say SNAPSHOT-OK
+  # The initramfs carries the rescue menu (mkinitcpio hook osmium-kurtar).
+  lsinitcpio /boot/initramfs-linux-zen.img | grep -q 'usr/bin/osmium-boot$' \
+    && lsinitcpio /boot/initramfs-linux-zen.img | grep -q 'emergency.service.d/osmium-rescue.conf$' && say INITRD-RESCUE-OK
   [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && say BOOT-OK
   # Mixing: ii with synthwave's accent color and wallpaper; synthwave cannot take ii's bar.
   runuser -u tester -- osmium-dots parcalar synthwave | sed 's/^/OSMIUM-PARTS /'

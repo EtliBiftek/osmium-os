@@ -416,7 +416,8 @@ fn mkinitcpio_dropin(encrypted: bool) -> String {
     if encrypted {
         hooks.push("sd-encrypt");
     }
-    hooks.extend(["filesystems", "fsck"]);
+    // osmium-kurtar: the rescue menu (QR code, previous kernel) when the root never appears.
+    hooks.extend(["filesystems", "fsck", "osmium-kurtar"]);
     format!("MODULES=(vfat nls_cp437 nls_iso8859_1)\nHOOKS=({})\n", hooks.join(" "))
 }
 
@@ -1598,10 +1599,10 @@ PATH="/dev/nvme0n1p4" SIZE="700000000" FSTYPE="ntfs" PARTTYPE="de94bba4-06d1-4d4
     #[test]
     fn initcpio_hooks() {
         let e = mkinitcpio_dropin(true);
-        assert!(e.contains("HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck)"));
+        assert!(e.contains("HOOKS=(base systemd autodetect microcode modconf kms keyboard sd-vconsole block sd-encrypt filesystems fsck osmium-kurtar)"));
         assert!(e.contains("MODULES=(vfat "));
         let p = mkinitcpio_dropin(false);
-        assert!(!p.contains("encrypt") && p.contains("filesystems fsck)"));
+        assert!(!p.contains("encrypt") && p.contains("filesystems fsck osmium-kurtar)"));
     }
 
     #[test]
