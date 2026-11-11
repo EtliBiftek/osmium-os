@@ -68,6 +68,14 @@ struct Rule {
     conds: Vec<Cond>,
 }
 
+impl Rule {
+    /// Identity of a rule across edits of the file: its normalised text.
+    fn key(&self) -> String {
+        let conds: Vec<String> = self.conds.iter().map(ToString::to_string).collect();
+        format!("{}: {}", self.mode, conds.join(" ve "))
+    }
+}
+
 /// Everything the conditions look at, so they can be tested without a system.
 #[derive(Debug, Default)]
 struct Facts {
@@ -196,22 +204,68 @@ fn matching<'a>(rules: &'a [Rule], facts: &Facts) -> Vec<&'a Rule> {
     rules.iter().filter(|r| r.conds.iter().all(|c| c.holds(facts))).collect()
 }
 
-// shortcut: kept in memory only, so a restarted daemon forgets which mode to
-// return to; persist it in the state dir if that turns out to matter.
+/// Kept in the state dir, so a restarted daemon still knows which mode to return to.
 #[derive(Debug, Default, PartialEq)]
 struct State {
     /// Mode we switched to and still own.
     applied: Option<String>,
     /// Mode to return to once no rule matches.
     previous: Option<String>,
-    /// Lines of the rules that matched on the last tick.
-    matching: Vec<usize>,
+    /// Rules that matched on the last tick, by `Rule::key`: line numbers would shift
+    /// when the file is edited during a manual override and read as a new match.
+    matching: Vec<String>,
     /// The user switched by hand: stay out until `matching` changes.
     yielded: bool,
 }
 
+impl State {
+    /// Lenient: a damaged file only loses what it cannot say.
+    fn parse(text: &str) -> State {
+        let mut st = State::default();
+        let mode = |v: &str| Some(v.to_string()).filter(|v| !v.is_empty());
+        for line in text.lines() {
+            match line.split_once('=') {
+                Some(("applied", v)) => st.applied = mode(v),
+                Some(("previous", v)) => st.previous = mode(v),
+                Some(("match", v)) => st.matching.push(v.into()),
+                Some(("yielded", v)) => st.yielded = v == "1",
+                _ => {}
+            }
+        }
+        st
+    }
+
+    fn to_text(&self) -> String {
+        let mut out = String::new();
+        out.extend(self.applied.iter().map(|m| format!("applied={m}\n")));
+        out.extend(self.previous.iter().map(|m| format!("previous={m}\n")));
+        out.extend(self.matching.iter().map(|k| format!("match={k}\n")));
+        if self.yielded {
+            out += "yielded=1\n";
+        }
+        out
+    }
+}
+
+fn state_file() -> Result<PathBuf> {
+    Ok(state_home()?.join("osmium/auto-state"))
+}
+
+fn load_state() -> Result<State> {
+    Ok(State::parse(&fs::read_to_string(state_file()?).unwrap_or_default()))
+}
+
+fn store_state(st: &State) -> Result {
+    let path = state_file()?;
+    let tmp = path.with_extension("tmp");
+    fs::create_dir_all(path.parent().unwrap_or(&path))
+        .and_then(|()| fs::write(&tmp, st.to_text()))
+        .and_then(|()| fs::rename(&tmp, &path))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// One tick of the daemon. Returns the mode to switch to, if any.
-fn step(st: &mut State, matching: Vec<usize>, winner: Option<&str>, current: Option<&str>) -> Option<String> {
+fn step(st: &mut State, matching: Vec<String>, winner: Option<&str>, current: Option<&str>) -> Option<String> {
     let changed = matching != st.matching;
     st.matching = matching;
     if st.applied.is_some() && st.applied.as_deref() != current {
@@ -351,9 +405,14 @@ fn tick(st: &mut State) -> Result {
     let rules = load_rules()?.unwrap_or_default();
     let facts = gather(&rules);
     let hits = matching(&rules, &facts);
-    let lines = hits.iter().map(|r| r.line).collect();
+    let keys = hits.iter().map(|r| r.key()).collect();
     let winner = hits.first().map(|r| r.mode.as_str());
-    if let Some(mode) = step(st, lines, winner, current_mode()?.as_deref()) {
+    let before = st.to_text();
+    let switch = step(st, keys, winner, current_mode()?.as_deref());
+    if st.to_text() != before {
+        store_state(st)?;
+    }
+    if let Some(mode) = switch {
         // A failed switch leaves the mode file unchanged, which the next tick
         // reads as a manual override: no retry storm.
         // osmium-mode talks to the compositor too: hand it the instance we found.
@@ -377,7 +436,7 @@ fn daemon() -> Result {
     while !output(hyprctl().args(["monitors", "-j"])).is_ok_and(|t| is_monitor_list(&t)) {
         std::thread::sleep(Duration::from_secs(5));
     }
-    let mut st = State::default();
+    let mut st = load_state()?;
     let mut last_err = String::new();
     loop {
         // The rules file is re-read every tick, so a typo in it must not kill the daemon.
@@ -521,58 +580,83 @@ mod tests {
         assert!(report(&rules[..1], &f).ends_with("Eşleşen kural yok.\n"));
     }
 
+    fn keys(n: &[usize]) -> Vec<String> {
+        n.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn state_survives_a_restart() {
+        let mut st = State::default();
+        step(&mut st, keys(&[1]), Some("oyun"), Some("normal"));
+        let mut back = State::parse(&st.to_text());
+        assert_eq!(back, st);
+        assert_eq!(step(&mut back, vec![], None, Some("oyun")).as_deref(), Some("normal"));
+        let yielded = State { yielded: true, matching: keys(&[2]), ..State::default() };
+        assert_eq!(State::parse(&yielded.to_text()), yielded);
+        assert_eq!(State::parse("bozuk\napplied=\nmatch=a: b=c\n"), State { matching: vec!["a: b=c".into()], ..State::default() });
+    }
+
+    #[test]
+    fn rule_identity_ignores_line_numbers() {
+        let a = parse_rules("oyun: uygulama=steam ve priz").unwrap();
+        let b = parse_rules("# yeni yorum\n\noyun:   uygulama=steam  ve  priz").unwrap();
+        assert_ne!(a[0].line, b[0].line);
+        assert_eq!(a[0].key(), b[0].key());
+        assert_eq!(a[0].key(), "oyun: uygulama=steam ve priz");
+    }
+
     #[test]
     fn takes_over_and_returns() {
         let mut st = State::default();
-        assert_eq!(step(&mut st, vec![], None, Some("normal")), None);
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("normal")).as_deref(), Some("oyun"));
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("oyun")), None, "applied once");
+        assert_eq!(step(&mut st, keys(&[]), None, Some("normal")), None);
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("normal")).as_deref(), Some("oyun"));
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("oyun")), None, "applied once");
         // A higher rule starts matching: switch, but still return to the original mode.
-        assert_eq!(step(&mut st, vec![1, 2], Some("oyun"), Some("oyun")), None);
-        assert_eq!(step(&mut st, vec![2], Some("sunum"), Some("oyun")).as_deref(), Some("sunum"));
-        assert_eq!(step(&mut st, vec![], None, Some("sunum")).as_deref(), Some("normal"));
-        assert_eq!(step(&mut st, vec![], None, Some("normal")), None);
+        assert_eq!(step(&mut st, keys(&[1, 2]), Some("oyun"), Some("oyun")), None);
+        assert_eq!(step(&mut st, keys(&[2]), Some("sunum"), Some("oyun")).as_deref(), Some("sunum"));
+        assert_eq!(step(&mut st, keys(&[]), None, Some("sunum")).as_deref(), Some("normal"));
+        assert_eq!(step(&mut st, keys(&[]), None, Some("normal")), None);
         assert_eq!(st, State::default());
     }
 
     #[test]
     fn does_not_fight_a_manual_switch() {
         let mut st = State::default();
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("normal")).as_deref(), Some("oyun"));
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("normal")).as_deref(), Some("oyun"));
         // The user picks another mode while the rule still matches.
         for _ in 0..3 {
-            assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("calisma")), None);
+            assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("calisma")), None);
         }
         // The rule stops matching: nothing to undo, the manual mode stays.
-        assert_eq!(step(&mut st, vec![], None, Some("calisma")), None);
+        assert_eq!(step(&mut st, keys(&[]), None, Some("calisma")), None);
         // It matches again: take over, and later return to the manual mode.
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("calisma")).as_deref(), Some("oyun"));
-        assert_eq!(step(&mut st, vec![], None, Some("oyun")).as_deref(), Some("calisma"));
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("calisma")).as_deref(), Some("oyun"));
+        assert_eq!(step(&mut st, keys(&[]), None, Some("oyun")).as_deref(), Some("calisma"));
     }
 
     #[test]
     fn manual_switch_and_new_match_in_one_tick() {
         let mut st = State::default();
-        step(&mut st, vec![1], Some("oyun"), Some("normal"));
-        assert_eq!(step(&mut st, vec![1, 2], Some("oyun"), Some("calisma")).as_deref(), Some("oyun"));
+        step(&mut st, keys(&[1]), Some("oyun"), Some("normal"));
+        assert_eq!(step(&mut st, keys(&[1, 2]), Some("oyun"), Some("calisma")).as_deref(), Some("oyun"));
         assert_eq!(st.previous.as_deref(), Some("calisma"));
     }
 
     #[test]
     fn failed_switch_is_not_retried() {
         let mut st = State::default();
-        assert!(step(&mut st, vec![1], Some("yok"), Some("normal")).is_some());
-        assert_eq!(step(&mut st, vec![1], Some("yok"), Some("normal")), None);
+        assert!(step(&mut st, keys(&[1]), Some("yok"), Some("normal")).is_some());
+        assert_eq!(step(&mut st, keys(&[1]), Some("yok"), Some("normal")), None);
     }
 
     #[test]
     fn winner_already_active_or_no_previous_mode() {
         let mut st = State::default();
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), Some("oyun")), None);
-        assert_eq!(step(&mut st, vec![], None, Some("oyun")), None, "nothing to return to");
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), Some("oyun")), None);
+        assert_eq!(step(&mut st, keys(&[]), None, Some("oyun")), None, "nothing to return to");
         // No mode was ever set: take over, and leave it when the rule ends.
-        assert_eq!(step(&mut st, vec![1], Some("oyun"), None).as_deref(), Some("oyun"));
-        assert_eq!(step(&mut st, vec![], None, Some("oyun")), None);
+        assert_eq!(step(&mut st, keys(&[1]), Some("oyun"), None).as_deref(), Some("oyun"));
+        assert_eq!(step(&mut st, keys(&[]), None, Some("oyun")), None);
     }
 
     const MONITORS: &str = r#"[{

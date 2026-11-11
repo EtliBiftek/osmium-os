@@ -28,12 +28,6 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
 - **m3ww socket path** (gaps item 25): `prepare()` rewrites `UNIX-CONNECT:/tmp/hypr/` in the eww
   scripts. Not verified that it covers every script in the gap list (`activewin`, `activews`,
   `workspaces`, `taskbarloop`, `overview-wrapper`, `hyprtest`) or that the bar updates at runtime.
-- **osmium-battery**: no restore on SIGTERM (logout/shutdown leaves the screen dimmed and the
-  target file); fix with an `ExecStopPost=` restore subcommand.
-- **osmium-auto**: the mode to return to lives in memory only (lost on restart); rules are
-  identified by line number, so editing the file during a manual override re-applies once.
-- **osmium-update prova**: Ctrl-C leaves the container and `/.osmium-prova` until the next run;
-  if `pacman -Su` fails after the rehearsed sync databases were copied, no rollback.
 - **osmium-guest**: the owner's session is locked only if it has a lock handler (hypridle);
   otherwise Ctrl+Alt+F<n> reaches the unlocked desktop.
 - **osmium-try**: NVIDIA proprietary device nodes are not passed into the container.

@@ -5,6 +5,7 @@
 //!   osmium-battery hedef <süre>    set a target runtime (4s, 90d, 4h, 90m) and start the controller
 //!   osmium-battery kapat           stop the controller and restore what it changed
 //!   osmium-battery run             controller loop (user unit osmium-battery.service)
+//!   osmium-battery stop-hook       ExecStopPost of the unit: restore, and drop the target unless restarting
 //!
 //! The controller walks a fixed ladder: power-saver profile, dimmer screen,
 //! 60 Hz, dimmer still. Whatever it changes is first written to
@@ -33,6 +34,7 @@ fn main() {
         ["hedef", d] => target(d),
         ["kapat"] => off(),
         ["run"] => controller(),
+        ["stop-hook"] => stop_hook(std::env::var("SERVICE_RESULT").ok().as_deref()),
         _ => Err(USAGE.into()),
     };
     exit_on_err("osmium-battery", res);
@@ -429,6 +431,22 @@ fn off() -> Result {
     Ok(())
 }
 
+/// A crash keeps the target: `Restart=on-failure` brings the controller back and it
+/// restores at start anyway. Anything else (logout, shutdown, `kapat`, done) ends the budget.
+fn keeps_target(service_result: Option<&str>) -> bool {
+    service_result.is_some_and(|r| r != "success")
+}
+
+/// Runs after every stop of the unit, including SIGTERM at logout or shutdown, which
+/// the controller loop never sees: without it the screen stayed dimmed.
+fn stop_hook(service_result: Option<&str>) -> Result {
+    restore(&mut Saved::load()?);
+    if !keeps_target(service_result) {
+        remove_dir(state_dir()?)?;
+    }
+    Ok(())
+}
+
 fn notify(title: &str, body: &str) {
     warn(run(Command::new("notify-send").args(["-a", "osmium-battery", title, body])));
 }
@@ -475,6 +493,14 @@ fn controller() -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_failures_keep_the_target() {
+        assert!(!keeps_target(Some("success")));
+        assert!(!keeps_target(None));
+        assert!(keeps_target(Some("exit-code")));
+        assert!(keeps_target(Some("signal")));
+    }
 
     #[test]
     fn parses_durations() {

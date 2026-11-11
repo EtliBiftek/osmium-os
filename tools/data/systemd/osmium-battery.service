@@ -3,5 +3,7 @@ Description=OsmiumOS battery budget controller (started by: osmium-battery hedef
 
 [Service]
 ExecStart=/usr/bin/osmium-battery run
+# Logout and shutdown send SIGTERM: restore brightness, profile and refresh rates.
+ExecStopPost=/usr/bin/osmium-battery stop-hook
 Restart=on-failure
 RestartSec=30

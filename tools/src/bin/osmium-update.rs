@@ -18,7 +18,7 @@
 //! databases, so it installs exactly the rehearsed versions. `--provasiz`
 //! skips all of this and runs `sudo pacman -Syu` as before.
 
-use osmium_tools::{Result, exit_on_err, output, run, state_home, succeeds};
+use osmium_tools::{Result, catch_interrupts, exit_on_err, interrupted, output, run, state_home, succeeds};
 use std::fs;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
@@ -382,13 +382,42 @@ fn upgrade(force: bool, rehearse: bool) -> Result<bool> {
             return Ok(true);
         }
         // -Su, not -Syu: the sync databases are the rehearsed ones.
-        run(Command::new("sudo").args(["pacman", "-Su", "--noconfirm"]))?;
+        let before = installed();
+        if let Err(e) = run(Command::new("sudo").args(["pacman", "-Su", "--noconfirm"])) {
+            return Err(after_failed_upgrade(e, before.is_some() && installed() == before));
+        }
+        let _ = run(&mut cmd(&sudo(&["rm", "-rf", SYNC_BACKUP])));
     } else {
         run(Command::new("sudo").args(["pacman", "-Syu"]))?;
     }
     write_time("last-update", now())?;
     let _ = fs::remove_file(state("update-hold")?);
     Ok(false)
+}
+
+/// `pacman -Q`: what is installed, to tell whether a failed transaction changed anything.
+fn installed() -> Option<String> {
+    output(Command::new("pacman").arg("-Q")).ok()
+}
+
+/// After a failed `pacman -Su` with the rehearsed sync databases. If nothing was installed,
+/// the old databases come back: new databases over old packages are a partial upgrade
+/// waiting to happen (any `pacman -S` would pull libraries the rest does not match).
+fn after_failed_upgrade(err: String, unchanged: bool) -> String {
+    if unchanged {
+        let back = format!("{SYNC_BACKUP}/.");
+        let restored = run(&mut cmd(&sudo(&["cp", "-a", &back, "/var/lib/pacman/sync/"])))
+            .and_then(|()| run(&mut cmd(&sudo(&["rm", "-rf", SYNC_BACKUP]))));
+        return match restored {
+            Ok(()) => format!("güncelleme başarısız oldu, hiçbir paket değişmedi; eski paket veritabanları geri yüklendi.\n{err}"),
+            Err(e) => format!("güncelleme başarısız oldu ve eski paket veritabanları geri yüklenemedi ({e}).\nYedek: {SYNC_BACKUP}\n{err}"),
+        };
+    }
+    format!(
+        "güncelleme yarıda kaldı: bazı paketler güncellendi.\n\
+         Tamamlamak için: sudo pacman -Su\n\
+         Geri dönmek için: osmium-changes list, sonra osmium-changes undo <güncelleme öncesi numara>.\n{err}"
+    )
 }
 
 fn prova() -> Result<bool> {
@@ -406,6 +435,8 @@ fn prova() -> Result<bool> {
 
 const PROVA_ROOT: &str = "/.osmium-prova";
 const PROVA_UNIT: &str = "osmium-prova.service";
+/// The live sync databases while the rehearsed ones are in place, until `pacman -Su` succeeds.
+const SYNC_BACKUP: &str = "/var/lib/pacman/sync.osmium-prova";
 const BOOT_TIMEOUT_SECS: u64 = 180;
 /// Units that cannot work in a container; their failure there says nothing.
 const CONTAINER_ONLY_FAILURES: &[&str] = &[
@@ -552,12 +583,20 @@ fn discard() -> Result {
 /// findings, the snapshot's sync databases replace the live ones.
 fn rehearsal(kernel: bool, adopt: &dyn Fn(&[String]) -> bool) -> Result<Vec<String>> {
     println!("\nProva: güncelleme önce sistemin bir kopyasında denenecek (yönetici parolası istenebilir).");
-    discard()?; // left over from an interrupted run
+    // Ctrl-C now stops the commands of the rehearsal but not this process, which then
+    // removes the container and the snapshot instead of leaving them for the next run.
+    catch_interrupts();
+    discard()?; // left over from a run that was killed
     run(&mut cmd(&sudo(&["btrfs", "subvolume", "snapshot", "/", PROVA_ROOT])))
         .map_err(|e| format!("prova için anlık görüntü alınamadı ({e}). Provasız güncelleme: osmium-update --provasiz"))?;
     let res = rehearse(kernel).and_then(|found| {
+        if interrupted() {
+            return Err("prova yarıda kesildi, güncelleme yapılmadı".into());
+        }
         if adopt(&found) {
             let sync = format!("{PROVA_ROOT}/var/lib/pacman/sync/.");
+            run(&mut cmd(&sudo(&["rm", "-rf", SYNC_BACKUP])))?;
+            run(&mut cmd(&sudo(&["cp", "-a", "/var/lib/pacman/sync", SYNC_BACKUP])))?;
             run(&mut cmd(&sudo(&["cp", "-a", &sync, "/var/lib/pacman/sync/"])))?;
         }
         Ok(found)
@@ -565,7 +604,10 @@ fn rehearsal(kernel: bool, adopt: &dyn Fn(&[String]) -> bool) -> Result<Vec<Stri
     if let Err(e) = discard() {
         eprintln!("osmium-update: uyarı: prova kopyası silinemedi: {e}");
     }
-    res
+    match res {
+        Err(_) if interrupted() => Err("prova yarıda kesildi, kopya silindi; güncelleme yapılmadı".into()),
+        res => res,
+    }
 }
 
 fn rehearse(kernel: bool) -> Result<Vec<String>> {
@@ -583,6 +625,9 @@ fn rehearse(kernel: bool) -> Result<Vec<String>> {
     run(&mut cmd(&boot_argv()))?;
     let mut booted = false;
     for _ in 0..BOOT_TIMEOUT_SECS / 2 {
+        if interrupted() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_secs(2));
         if let Some(ok) = boot_settled(&stdout_of(&machine_argv(&["is-system-running"]))) {
             booted = ok;
@@ -713,6 +758,12 @@ mod tests {
         assert!(!kernel_files_ok("14000000 vmlinuz-linux\n0 initramfs-linux.img\n"));
         assert!(!kernel_files_ok("14000000 vmlinuz-linux\n"));
         assert!(!kernel_files_ok(""));
+    }
+
+    #[test]
+    fn failed_upgrade_that_changed_packages_says_how_to_go_on() {
+        let msg = after_failed_upgrade("pacman failed".into(), false);
+        assert!(msg.contains("sudo pacman -Su") && msg.contains("osmium-changes undo") && msg.ends_with("pacman failed"), "{msg}");
     }
 
     #[test]

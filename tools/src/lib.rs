@@ -255,3 +255,28 @@ mod tests {
         assert!(json_objects("").is_empty() && json_objects("]]}{[[\"a\"").is_empty());
     }
 }
+
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_interrupt(_: i32) {
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+unsafe extern "C" {
+    fn signal(signum: i32, handler: extern "C" fn(i32)) -> usize;
+}
+
+/// From now on Ctrl-C (SIGINT), SIGTERM and SIGHUP only set a flag (see `interrupted`), so the
+/// tool can clean up. A handler, unlike `SIG_IGN`, is reset by exec: children still die on Ctrl-C.
+pub fn catch_interrupts() {
+    // Linux numbers: SIGHUP, SIGINT, SIGTERM.
+    for sig in [1, 2, 15] {
+        // SAFETY: the handler only stores to an atomic, which is async-signal-safe.
+        unsafe { signal(sig, on_interrupt) };
+    }
+}
+
+/// True once a signal caught by `catch_interrupts` arrived.
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
+}
