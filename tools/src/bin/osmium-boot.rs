@@ -420,7 +420,7 @@ fn hint() -> Result {
     }
     // The notification daemon starts with the desktop.
     for _ in 0..60 {
-        if succeeds(Command::new("hyprctl").arg("version")) {
+        if succeeds(osmium_tools::hyprctl().arg("version")) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));

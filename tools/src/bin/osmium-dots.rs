@@ -530,14 +530,14 @@ fn pending_run() -> Result {
     }
     // Wait up to a minute for the compositor's IPC.
     for _ in 0..60 {
-        if succeeds(Command::new("hyprctl").arg("version")) {
+        if succeeds(osmium_tools::hyprctl().arg("version")) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     let term = TERMINALS.iter().find(|t| in_path(t)).ok_or("no terminal (kitty, foot, alacritty) installed")?;
     let cmd = format!("{term} -e osmium-dots apply {target} --mode script");
-    let reply = output(Command::new("hyprctl").args(["dispatch", "exec", &cmd]))?;
+    let reply = output(osmium_tools::hyprctl().args(["dispatch", "exec", &cmd]))?;
     if reply.trim() == "ok" {
         osmium_tools::remove_file(&p)?;
         Ok(())
@@ -807,7 +807,7 @@ fn mix_start() -> Result {
     let info = resolved_info(Path::new(DOTS_DIR), &id)?;
     let parts = mix_parts(&info);
     for _ in 0..60 {
-        if succeeds(Command::new("hyprctl").arg("version")) {
+        if succeeds(osmium_tools::hyprctl().arg("version")) {
             break;
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
@@ -831,12 +831,12 @@ fn mix_start() -> Result {
                 if let Some(own) = info.get(&format!("{part}.durdur")) {
                     succeeds(Command::new("pkill").args(["-x", own]));
                 }
-                let _ = output(Command::new("hyprctl").args(["dispatch", "exec", value]));
+                let _ = output(osmium_tools::hyprctl().args(["dispatch", "exec", value]));
             }
             Kind::Key => match info.get(&format!("{part}.tus")).and_then(|k| rebind(k, value)) {
                 Some([unbind, bind]) => {
-                    let _ = output(Command::new("hyprctl").args(["keyword", "unbind", &unbind]));
-                    let _ = output(Command::new("hyprctl").args(["keyword", "bind", &bind]));
+                    let _ = output(osmium_tools::hyprctl().args(["keyword", "unbind", &unbind]));
+                    let _ = output(osmium_tools::hyprctl().args(["keyword", "bind", &bind]));
                 }
                 None => eprintln!("osmium-dots: {part}.tus geçersiz"),
             },
