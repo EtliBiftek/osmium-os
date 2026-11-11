@@ -4,8 +4,8 @@
 //!   osmium-install check        validate the config on stdin, print {"ok":..}
 //!   osmium-install run          install; JSON progress lines on stdout
 //!
-//! Config is `key=value` lines on stdin (passwords never on argv). Same disk layout and boot
-//! setup as the Calamares config (GPT, ESP at /boot/efi, btrfs @ @home @cache @log, GRUB,
+//! Config is `key=value` lines on stdin (passwords never on argv). Disk layout and boot setup:
+//! GPT, ESP at /boot/efi, btrfs @ @home @cache @log, GRUB,
 //! LUKS1 so GRUB can read /boot), built for speed: the squashfs is unpacked on all cores,
 //! independent chroot work runs in parallel, the initramfs is zstd -1, and there is no
 //! fallback image, swap file or os-prober.
@@ -29,11 +29,11 @@ const ESP_MOUNT: &str = "/boot/efi";
 const BOOTMNT: &str = "/run/archiso/bootmnt";
 const LIVE_ROOT: &str = "/run/archiso/airootfs";
 const BTRFS_OPTS: &str = "noatime,compress=zstd:1";
-/// (subvolume, mount point) as in the Calamares mount.conf.
+/// (subvolume, mount point).
 const SUBVOLS: &[(&str, &str)] = &[("@", "/"), ("@home", "/home"), ("@cache", "/var/cache"), ("@log", "/var/log")];
-/// Calamares users.conf groups plus input; groups missing from the image are skipped.
+/// Groups of the new user; groups missing from the image are skipped.
 const GROUPS: &[&str] = &["users", "wheel", "video", "input", "audio", "lp", "network", "storage", "i2c"];
-/// Same as Calamares services-systemd.conf: (unit, enable).
+/// Units to enable or disable on the installed system: (unit, enable).
 const SERVICES: &[(&str, bool)] = &[
     ("NetworkManager.service", true),
     ("snapper-timeline.timer", true),
@@ -1004,7 +1004,7 @@ fn boot(c: &Config, lay: &Layout) -> std::result::Result<(), StepErr> {
         let grub = s.spawn(|| -> Result { grub_install() });
         let services = s.spawn(|| -> Result {
             for (unit, on) in SERVICES {
-                // Missing units are fine (edition-dependent), as non-mandatory units in Calamares.
+                // Missing units are fine (edition-dependent).
                 succeeds(Command::new("systemctl").arg(format!("--root={MNT}")).arg(if *on { "enable" } else { "disable" }).arg(unit));
             }
             Ok(())
@@ -1092,7 +1092,7 @@ fn grub_install() -> Result {
     remove_old_boot_entries();
     let base = ["--target=x86_64-efi", "--efi-directory=/boot/efi", "--bootloader-id=OsmiumOS"];
     if sh("grub-install", &mut ch("grub-install", &base)).is_ok() {
-        // Same as Calamares installEFIFallback: firmware that ignores NVRAM entries (VirtualBox).
+        // Fallback path for firmware that ignores NVRAM entries (VirtualBox).
         let efi = format!("{MNT}{ESP_MOUNT}/EFI");
         fs::create_dir_all(format!("{efi}/BOOT")).map_err(|e| format!("{efi}/BOOT: {e}"))?;
         fs::copy(format!("{efi}/OsmiumOS/grubx64.efi"), format!("{efi}/BOOT/BOOTX64.EFI"))

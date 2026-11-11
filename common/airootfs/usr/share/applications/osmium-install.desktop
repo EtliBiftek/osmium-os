@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Install OsmiumOS
-Name[tr]=OsmiumOS'u Kur
-Exec=sudo -E calamares
-Icon=calamares
-Categories=System;

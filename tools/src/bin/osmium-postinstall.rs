@@ -1,5 +1,5 @@
-//! Finishes an OsmiumOS install. Calamares runs it inside the target chroot
-//! (shellprocess@postinstall), after users are created and before initcpio.
+//! Finishes an OsmiumOS install. osmium-install runs it inside the target chroot, after
+//! users are created and before initcpio.
 
 use osmium_tools::{KEYRING, REPO_URL, Result, append, osmium_repo_section, remove_dir, remove_file, run, succeeds};
 use std::fs;
@@ -70,8 +70,8 @@ Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch
 ";
 
 fn postinstall() -> Result {
-    // The live user ships in the squashfs passwd/shadow/group. Calamares cannot have
-    // created a user with this name (useradd would have failed), so this is the live one.
+    // The live user ships in the squashfs passwd/shadow/group. The installer refuses this
+    // name for the new user, so this is the live one.
     if succeeds(Command::new("id").arg("osmium")) {
         // -f: the host /proc is bind-mounted and the live session runs as this uid,
         // which plain userdel would refuse ("currently used by process").

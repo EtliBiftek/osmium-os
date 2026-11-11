@@ -68,8 +68,7 @@ slot holding what the same key presses type on a US layout, so the passphrase op
 boot exactly as it was typed in the installer.
 
 `osmium-install disks` lists disks as JSON; `osmium-install check` validates a config read from
-stdin (`key=value` lines). UEFI only. For manual partitioning the ISO also has Calamares
-(`sudo calamares`).
+stdin (`key=value` lines). UEFI only.
 
 ## Tools
 
@@ -162,7 +161,5 @@ Keep the secret key backed up offline; anyone holding it can publish packages yo
 Copyright (C) 2026 EtliBiftek
 
 GPL-3.0-or-later, see `LICENSE`: you can redistribute and modify OsmiumOS under the GNU
-General Public License, version 3 or any later version. The Calamares branding files in
-`packages/osmium-calamares-config/etc/calamares/branding/osmium/` (images, `show.qml`) come
-from Calamares under the same license, as their `.license` files and headers say.
+General Public License, version 3 or any later version.
 `hyprland-rust` keeps its own license (BSD-3-Clause, Smithay parts MIT).

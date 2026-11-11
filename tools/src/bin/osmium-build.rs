@@ -234,15 +234,6 @@ fn packages(root: &Path) -> Result {
         build(root, &dir, &out, "-d", marker.as_deref(), &mut reused)?;
     }
 
-    // Calamares silently drops its Python modules when Python is missing at build time.
-    let calamares = pkg_files(&out)?
-        .into_iter()
-        .find(|p| p.file_name().unwrap().to_string_lossy().starts_with("calamares-"))
-        .ok_or("calamares package missing")?;
-    if !output(Command::new("bsdtar").arg("-tf").arg(&calamares))?.contains("modules/bootloader/main.py") {
-        return Err("calamares package has no Python modules".into());
-    }
-
     // GitHub renames `:` in release asset names, so pacman would 404 on epoch packages.
     if let Some(p) = pkg_files(&out)?.iter().find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(':'))) {
         return Err(format!("{}: epoch in file name, the GitHub release repo cannot serve it; repackage without an epoch", p.display()));

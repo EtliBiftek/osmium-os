@@ -294,11 +294,6 @@ ApplicationWindow {
                     text: "Birkaç soru soracağız, sonra sistem doğrudan diske açılır: paket indirmez, internet gerekmez. "
                         + "Btrfs + snapper anlık görüntüleri, yapay zekâ kenar çubuğu ve hazır masaüstleri kurulumla gelir."
                 }
-                NoticeBox {
-                    Layout.fillWidth: true
-                    materialIcon: "info"
-                    text: "Elle bölümleme gerekiyorsa: terminalde sudo calamares"
-                }
             }
         }
     }

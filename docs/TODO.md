@@ -20,8 +20,6 @@ plain) and boot of the installed system. hyprland-rust gaps are tracked separate
 
 ## Half done
 
-- **Calamares**: still shipped as the manual-partitioning fallback, no longer tested since the
-  KDE/GNOME editions were removed. Keep (and add a CI test) or drop.
 - **Installer UI** (`osmium-installer.qml`): never exercised in CI; only the backend is.
 
 ## Needs the user (never done by Claude)
