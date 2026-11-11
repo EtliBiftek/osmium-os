@@ -24,6 +24,9 @@ else
 fi
 pkill -f 'qs -p' ; sleep 2
 as grim /tmp/s.png && echo "OSMIUM-SCREENSHOT $(base64 -w0 /tmp/s.png)"
+# Dot preview: synthwave nested in a window, screenshotted from inside.
+as osmium-dots onizle synthwave --png /tmp/p.png --sure 20 2>&1 | sed 's/^/OSMIUM-PREVIEW-LOG /'
+[ -s /tmp/p.png ] && echo "OSMIUM-PREVIEW $(base64 -w0 /tmp/p.png)"
 tail -20 "$rt/hyprland-rust.log" | sed 's/^/OSMIUM-HR /'
 poweroff -f
 sleep 60

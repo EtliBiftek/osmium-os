@@ -19,6 +19,12 @@ checks() {
   pacman -Qkq >/tmp/qk 2>&1 && say PKG-FILES-OK || sed 's/^/OSMIUM-MISSING /' /tmp/qk | head -20
   snapper --no-dbus -c root list | grep -q Kurulum && say SNAPSHOT-OK
   [ "$(cat /etc/hostname)" = osmium-test ] && id tester && ! id osmium 2>/dev/null && say BOOT-OK
+  # Mixing: ii with synthwave's accent color and wallpaper; synthwave cannot take ii's bar.
+  runuser -u tester -- osmium-dots parcalar synthwave | sed 's/^/OSMIUM-PARTS /'
+  runuser -u tester -- osmium-dots karistir neon ii renk=synthwave duvar=synthwave \
+    && grep -q 'karisim.renk=#ff2bd6' /home/tester/.local/share/osmium/dots/neon/info \
+    && runuser -u tester -- env HOME=/tmp/mixhome XDG_STATE_HOME=/tmp/mixhome/.local/state XDG_DATA_HOME=/home/tester/.local/share osmium-dots apply neon >/dev/null \
+    && [ -d /tmp/mixhome/.config/quickshell/ii ] && say MIX-OK
 }
 efibyte() { od -An -tu1 -j4 -N1 "/sys/firmware/efi/efivars/$1-8be4df61-93ca-11d2-aa0d-00e098032b8c" 2>/dev/null | tr -d ' '; }
 

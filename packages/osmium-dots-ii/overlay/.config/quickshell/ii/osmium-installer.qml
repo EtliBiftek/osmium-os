@@ -140,6 +140,9 @@ ApplicationWindow {
         }
     }
     Process {
+        id: previewProc
+    }
+    Process {
         id: dotsProc
         command: ["osmium-dots", "list", "--json"]
         stdout: StdioCollector {
@@ -520,6 +523,15 @@ ApplicationWindow {
                         onClicked: { root.dots = modelData.id; root.dotsMode = "config" }
                         text: modelData.title
                         description: modelData.description
+                    }
+                }
+                DialogButton {
+                    // Runs the chosen desktop in a window (nested hyprland-rust, throwaway home).
+                    buttonText: previewProc.running ? "Önizleme açık" : "Seçili masaüstünü önizle"
+                    enabled: !previewProc.running && !root.dots.startsWith("github:")
+                    onClicked: {
+                        previewProc.command = ["osmium-dots", "onizle", root.dots]
+                        previewProc.running = true
                     }
                 }
             }

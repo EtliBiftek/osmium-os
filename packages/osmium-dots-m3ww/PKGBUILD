@@ -109,6 +109,10 @@ title=m3ww (Material You EWW)
 description=end-4'ün arşivlenmiş m3ww masaüstü stili: Material Design 3 renkli EWW üst çubuğu, yan paneller ve bildirimler.
 source=$url/tree/$_commit/m3ww
 license=GPL-3.0-or-later
+# Mixing (osmium-dots karistir): its EWW bar, and wallpapers through awww.
+cubuk=.config/eww
+cubuk.baslat=eww daemon && eww open bar
+duvar.uygula=awww img {duvar}
 INFO
   # The archive branch carries no LICENSE file; upstream (main) is GPL-3.0, which is what we declare.
 }

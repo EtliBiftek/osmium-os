@@ -44,7 +44,15 @@ osmium-dots apply waffle
 osmium-dots search catppuccin                         # GitHub repos with topic "hyprland"
 osmium-dots apply github:owner/repo                   # copies only its config dirs
 osmium-dots apply github:owner/repo --mode script     # shows its install script, runs after `çalıştır`
+osmium-dots onizle m3ww                               # try it in a window first (nested hyprland-rust)
+osmium-dots parcalar synthwave                        # parts it can give or take
+osmium-dots karistir neon ii renk=synthwave duvar=synthwave   # ii with synthwave's colors
 ```
+
+Mixing works with the parts each dot declares in its `info`: `renk` (accent color), `duvar`
+(wallpaper) and `cubuk` (bar). ii rebuilds its whole palette from a color or wallpaper; a bar
+can only replace a base's bar when the base says how to stop its own (synthwave does, ii's bar
+is part of its shell). The installer has a preview button for the built-in desktops.
 
 Replaced `~/.config/<dir>` entries go to `~/.local/state/osmium/dots-backup/<time>/`. The login
 session (`osmium-dots session`, used by greetd and the live ISO) applies `ii` on first login.
