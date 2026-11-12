@@ -1,6 +1,6 @@
 # OsmiumOS: unfinished and not started work
 
-State at the `ccr-5167ad5a-uh14lf` branch (2026-11-11), branch build #62 green. Branch builds run the whole pipeline
+State at the `claude/inspiring-mendel-9nky29` branch (2026-11-12). Branch builds run the whole pipeline
 without publishing (`workflow_dispatch` on the branch). hyprland-rust gaps are tracked separately
 in `docs/hyprland-rust-gaps.md`.
 
@@ -27,6 +27,15 @@ in `docs/hyprland-rust-gaps.md`.
   shell and cannot be stopped one by one; ii takes colors, wallpaper and the lock screen only.
 - **Installer self-test** walks every page and checks the config it would send, but does not
   type into fields or press the install button in the UI (the backend install is tested).
+
+## Known limits
+
+- **Rollback next to Windows (XBOOTLDR)**: `/boot` is its own FAT partition there and is not part
+  of the snapshots. After a rollback the kernel image and `/boot/osmium.efi` on it are still the
+  update's, while the root has the old modules. The automatic rollback boots the rescue copy and
+  no longer re-installs the failed image, but `mkinitcpio` cannot rebuild until the next kernel
+  update, and a rollback from the rescue menu keeps the current kernel. A real fix keeps the
+  kernel inside the snapshot (build the UKI from `/usr/lib/modules/*/vmlinuz`).
 
 ## Needs the user (never done by Claude)
 

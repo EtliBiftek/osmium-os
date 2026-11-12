@@ -95,15 +95,22 @@ ApplicationWindow {
         if (alongside) {
             const w = selectedDisk().windows
             if (!w) return "Bu diskte Windows bulunamadı."
-            if (w.blocker === "bitlocker") return "Windows bölümü BitLocker ile şifreli: önce Windows'ta BitLocker'ı kapatın."
-            if (w.blocker === "hibernated") return "Windows hazırda bekletmede: Hızlı Başlatma'yı kapatıp Windows'u yeniden başlatın."
-            if (w.blocker !== "") return "Windows bölümü küçültülemiyor: Windows'ta chkdsk /f çalıştırın."
-            if (sizeGb * 1073741824 > w.available) return `Windows'tan en fazla ${Math.floor(w.available / 1073741824)} GB ayrılabilir.`
+            // As osmium-install does it: what keeps Windows from shrinking only matters when
+            // the unpartitioned space (all `available` counts then) is not enough by itself.
+            if (sizeGb * 1073741824 > w.available) {
+                if (w.blocker === "bitlocker") return "Windows bölümü BitLocker ile şifreli: önce Windows'ta BitLocker'ı kapatın."
+                if (w.blocker === "hibernated") return "Windows hazırda bekletmede: Hızlı Başlatma'yı kapatıp Windows'u yeniden başlatın."
+                if (w.blocker !== "") return "Windows bölümü küçültülemiyor: Windows'ta chkdsk /f çalıştırın."
+                return `Windows'tan en fazla ${Math.floor(w.available / 1073741824)} GB ayrılabilir.`
+            }
         }
         if (encrypt && passphrase.length < 8) return "Şifreleme parolası en az 8 karakter olmalı."
         if (encrypt && passphrase !== passphrase2) return "Şifreleme parolaları aynı değil."
-        if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) return "Kullanıcı adı küçük harf, rakam, - ve _ olmalı."
-        if (!/^[a-zA-Z0-9-]{1,63}$/.test(hostname)) return "Bilgisayar adı harf, rakam ve - olmalı."
+        if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(username)) return "Kullanıcı adı küçük harfle başlamalı; küçük harf, rakam, - ve _ içerebilir."
+        // The same rules as osmium-install, so they are named here and not after pressing Kur.
+        if (username === "root" || username === "osmium") return `"${username}" kullanıcı adı olarak kullanılamaz.`
+        if (!/^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(hostname) || hostname === "localhost")
+            return "Bilgisayar adı harf, rakam ve - olmalı; - ile başlayıp bitemez."
         if (password.length === 0) return "Parola boş olamaz."
         if (password !== password2) return "Parolalar aynı değil."
         return ""
@@ -445,6 +452,7 @@ ApplicationWindow {
                 NoticeBox {
                     Layout.fillWidth: true
                     visible: root.alongside && (root.selectedDisk().windows?.blocker ?? "") !== ""
+                        && root.sizeGb * 1073741824 > (root.selectedDisk().windows?.available ?? 0)
                     materialIcon: "warning"
                     text: {
                         const b = root.selectedDisk().windows?.blocker ?? ""

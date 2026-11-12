@@ -225,8 +225,11 @@ impl App {
                     .map_or(Ok(()), std::fs::create_dir_all)
                     .and_then(|_| std::fs::write(&path, self.look.to_lua()));
                 self.status = match res {
+                    // hyprctl exits 0 even when the compositor refuses, and then prints the
+                    // reason instead of `ok`.
                     Ok(()) => match tool("hyprctl", &["reload"]) {
-                        Ok(_) => "Kaydedildi ve uygulandı.".into(),
+                        Ok(reply) if reply.trim() == "ok" => "Kaydedildi ve uygulandı.".into(),
+                        Ok(reply) => format!("Kaydedildi, ama yeniden yüklenemedi: {}", reply.trim()),
                         Err(e) => format!("Kaydedildi, ama yeniden yüklenemedi: {e}"),
                     },
                     Err(e) => format!("{}: {e}", path.display()),

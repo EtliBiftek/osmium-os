@@ -280,7 +280,7 @@ fn write_bundle(b: &Bundle) -> Result<Bundle> {
 }
 
 fn reload() {
-    if !succeeds(Command::new("hyprctl").arg("reload")) {
+    if !succeeds(osmium_tools::hyprctl().arg("reload")) {
         eprintln!("osmium-share: warning: hyprctl reload failed");
     }
 }

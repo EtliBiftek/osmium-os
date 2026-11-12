@@ -29,8 +29,9 @@ User-facing text (tools, installer, messages) is Turkish; code, comments, commit
   Protocol: `disks` -> JSON; `check`/`run` read `key=value` lines on stdin; `run` prints JSON lines
   `{"step","pct","msg"}`, then `{"done":true,"seconds"}` or `{"error"}`.
 
-  CI job `install-test` runs it from the Hyprland ISO in QEMU (LUKS, then plain) and boots the
-  result; on failure the serial logs are in the `install-test-logs` artifact.
+  CI job `install-test` runs it from the Hyprland ISO in QEMU and boots the result, as four
+  legs on four runners at once (`.github/ci/test.sh luks|plain|win|ui`); on failure the serial
+  logs (and the screen of a hung VM) are in the `install-test-logs-<leg>` artifact.
 
 ## Compositor
 

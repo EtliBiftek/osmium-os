@@ -4,11 +4,18 @@
 # the markers of the snapshot, which is what the rollback phase checks.
 exec >/dev/ttyS0 2>&1
 say() { echo "OSMIUM-$*"; }
-sleep 20
 esp() { ls /efi/EFI/Linux | tr '\n' ' ' | sed "s/^/OSMIUM-ESP-$1 /"; echo; }
 checks() {
+  # Let the boot settle, so units that fail late are seen. Only here: the phases that just
+  # count boots do not wait.
+  sleep 20
+  # No unit may hold the boot for a device this machine does not have (a pulled-in tpm2.target
+  # once cost 90 s on every boot without a TPM).
+  journalctl -b --no-pager | grep -m3 'Timed out waiting for device' | sed 's/^/OSMIUM-DEVICE-TIMEOUT /'
   say "FAILED-UNITS $(systemctl --failed --no-legend --plain | tr '\n' ';')"
   say "GREETD $(systemctl is-active greetd)"
+  # The boot menu names the system from the os-release inside the UKI.
+  say "BOOT-TITLES $(bootctl list 2>/dev/null | grep -i 'title:' | tr -s ' ' | tr '\n' ';')"
   journalctl -b -p err --no-pager | tail -40
   [ -d /home/tester/.config/quickshell/ii ] && say DOTS-OK
   # Smoke-run the read-only tools on a real installed system (output only, never fatal).
@@ -82,9 +89,9 @@ elif [ ! -e /root/fazB ]; then
   touch /root/fazB
   n=$(snapper --no-dbus -c root create -t pre -p -c number -d test-guncelleme)
   touch /root/guncelleme-sonrasi
-  # Panics before the root is mounted; panic=5 reboots, systemd-boot counts the try.
+  # Panics before the root is mounted; panic=1 reboots, systemd-boot counts the try.
   ukify build --linux=/boot/vmlinuz-linux-zen --initrd=/boot/initramfs-linux-zen.img \
-    --cmdline="panic=5 rdinit=/yok root=/dev/yok" --output=/boot/osmium.efi && say BROKEN-BUILT
+    --cmdline="panic=1 rdinit=/yok root=/dev/yok" --output=/boot/osmium.efi && say BROKEN-BUILT
   osmium-boot kur
   esp C
   say "ROLLBACK-ARMED $n $(cat /var/lib/osmium/boot/geri-don)"

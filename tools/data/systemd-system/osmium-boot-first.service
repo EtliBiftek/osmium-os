@@ -2,8 +2,11 @@
 Description=OsmiumOS: TPM2 disk unlock after the first boot
 ConditionPathExists=/var/lib/osmium/boot/tpm.key
 # Needs the TPM and the opened root; not ordered after multi-user.target, so nothing in
-# multi-user can hold it back.
-Wants=tpm2.target
+# multi-user can hold it back. Ordered after tpm2.target but never pulls it in: the target
+# waits for /dev/tpm0, and Wants= counts even when the condition above fails, so every boot
+# of a machine without a TPM stood still for 90 s (systemd's pcr units in sysinit.target are
+# ordered after it). systemd-tpm2-generator adds the target itself when the firmware has a TPM
+# whose driver is not loaded yet.
 After=tpm2.target cryptsetup.target local-fs.target
 
 [Service]

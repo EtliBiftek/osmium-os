@@ -118,7 +118,7 @@ fn list() -> Result {
 /// Runs `hyprctl <args>`. hyprctl exits 0 even when the compositor refuses,
 /// and then prints the reason instead of `ok`, so check the reply.
 fn hypr_ctl(args: &[&str]) -> Result {
-    let reply = output(Command::new("hyprctl").args(args))?;
+    let reply = output(osmium_tools::hyprctl().args(args))?;
     match reply.trim() {
         "ok" => Ok(()),
         other => Err(format!("hyprctl {}: {other}", args.join(" "))),
